@@ -2,7 +2,7 @@
 
 ## Project Context
 
-This project is a native Rust desktop app built with GPUI Kit. It adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows. Supported production targets are macOS 15 or newer and Windows 10 or newer.
+This project is a native Rust desktop app built with GPUI Kit. It adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows. Supported production targets are macOS 15 or newer and 64-bit Windows 10 version 1703 or newer.
 
 Project layout:
 
@@ -108,6 +108,22 @@ Do not test side-effecting actor behavior by directly mutating actor internals o
 - Make safety blocks visible through logs or UI state.
 - Preserve manual override, overlap/same-scene, readiness-timeout, and disconnect safety behavior.
 
+## Worktree Build Setup
+
+Immediately after creating a worktree, run `make cargo-setup` from its root before compiling.
+This writes an ignored, checkout-local `.cargo/config.toml` that shares the main checkout's
+`target/` and a repo-local, size-limited sccache. Python 3.11 or newer is required. Do not create
+worktree-specific target directories or override `CARGO_TARGET_DIR`, `RUSTC_WRAPPER`, or the
+configured incremental policy. If working on an older branch without the setup script, run
+`python3 /absolute/path/to/main-checkout/scripts/cargo-setup.py` from that worktree instead.
+Run `make cargo-cache-check` to verify setup. Packaging's explicit `--target-dir` is intentional
+and is exempt from target sharing. CI keeps its existing runner-local caching.
+
+`cargo clean` now removes shared artifacts for every worktree. Do not run it merely to clean up
+one worktree. Setup does not delete or migrate existing worktree `target/` directories; ask before
+removing obsolete build directories. Keep the main checkout in place while using this setup;
+rerun setup in each worktree if the main checkout moves.
+
 ## Verification Commands
 
 Use the smallest relevant `make` target while developing, then run broader verification before completion. The root `Makefile` is a thin command index over the native Cargo workflows below.
@@ -135,7 +151,7 @@ make package-windows RELEASE_ID="local"
 make probe ARGS="..."
 ```
 
-`make dev` runs the GPUI application. `make visual-test` runs the GPUI native visual/component tests on macOS. The package targets create distributable archives under `dist/release/`; macOS packaging requires macOS and builds an ad-hoc-signed universal `.app` without Developer ID signing or notarization, while Windows packaging creates an unsigned archive and requires PowerShell and the MSVC x64 target. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
+`make dev` runs the GPUI application. `make visual-test` runs the GPUI native visual/component tests on macOS. The package targets use Velopack to create distributions and update feeds under `dist/release/`. Both require Python 3 and .NET 8, with local tooling and caches under `dist/`. macOS packaging requires macOS and builds an ad-hoc-signed universal `.app` ZIP without Developer ID signing or notarization. Windows packaging creates unsigned per-user MSI, setup, and portable ZIP distributions and requires PowerShell 7 and the MSVC x64 target. See `docs/releases.md` for release versions, channels, and updater behavior. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
 
 Debug smoke target:
 

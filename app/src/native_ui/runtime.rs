@@ -10,6 +10,7 @@ use crate::projector::ProjectionSubscription;
 use crate::runtime::events::AppEventBus;
 use crate::settings::build_settings_actor;
 use crate::show::build_show_actor;
+use crate::updates::{UpdateInstallQueue, build_updates_actor};
 
 pub const APP_IDENTIFIER: &str = "com.advancedshowcontrol.app";
 
@@ -19,6 +20,7 @@ pub struct NativeRuntime {
     lifecycle: AppLifecycle,
     projections: Option<ProjectionSubscription>,
     _logging: LoggingRuntime,
+    update_install_queue: UpdateInstallQueue,
     #[cfg(feature = "debug-tools")]
     debug_commands: crate::debug_tools::DebugRuntimeCommands,
 }
@@ -26,7 +28,8 @@ pub struct NativeRuntime {
 impl NativeRuntime {
     /// @cc [owner:mixxorz,label:architecture] production-runtime-wiring
     /// Construction MUST create one Tokio runtime, one shared event bus, one app-lifetime Show and
-    /// Settings owner, one Lifecycle using those owners, and exactly one projector subscription.
+    /// Settings and Updates owner, one Lifecycle using those owners, and exactly one projector
+    /// subscription.
     pub fn build() -> Result<Self> {
         Self::build_at(app_config_dir())
     }
@@ -52,6 +55,7 @@ impl NativeRuntime {
         })?;
         #[cfg(feature = "debug-tools")]
         let debug_commands;
+        let update_install_queue = UpdateInstallQueue::default();
         let (logging, commands, lifecycle) = {
             let _entered = runtime.enter();
             let event_bus = AppEventBus::default();
@@ -62,6 +66,7 @@ impl NativeRuntime {
             let (settings, settings_task, initial_settings) =
                 build_settings_actor(app_config_dir, event_bus.clone());
             logging.apply_settings(&initial_settings);
+            let (updates, updates_task) = build_updates_actor(event_bus.clone());
             let lifecycle = AppLifecycle::new(
                 event_bus,
                 show.clone(),
@@ -71,6 +76,7 @@ impl NativeRuntime {
             );
             show_task.spawn();
             settings_task.spawn();
+            updates_task.spawn();
             #[cfg(feature = "debug-tools")]
             {
                 debug_commands = crate::debug_tools::DebugRuntimeCommands::new(lifecycle.clone());
@@ -80,7 +86,8 @@ impl NativeRuntime {
                 show,
                 settings,
                 logging.ui_logs.clone(),
-            );
+            )
+            .with_updates(updates, update_install_queue.clone());
             (logging, commands, lifecycle)
         };
         let projections = runtime
@@ -94,6 +101,7 @@ impl NativeRuntime {
             lifecycle,
             projections: Some(projections),
             _logging: logging,
+            update_install_queue,
             #[cfg(feature = "debug-tools")]
             debug_commands,
         })
@@ -129,6 +137,22 @@ impl NativeRuntime {
             .map(|_| ());
         self.runtime
             .block_on(finish_shutdown(&self.lifecycle, disconnect_result))
+    }
+
+    /// @cc [owner:mixxorz,label:safety] authorized-update-handoff-only
+    /// Only a plan armed by the native dirty-session and disconnect continuation MAY launch an
+    /// installer at exit. Ordinary Quit MUST NOT install a downloaded update. The helper MUST
+    /// wait for the current process to exit before applying the update.
+    pub fn launch_update_on_exit(&self) -> Result<(), String> {
+        if let Some(plan) = self.update_install_queue.take() {
+            plan.launch_after_exit().inspect_err(|error| {
+                tracing::error!(
+                    event = "update_install_handoff_failed",
+                    "The update could not be started: {error}"
+                );
+            })?;
+        }
+        Ok(())
     }
 }
 

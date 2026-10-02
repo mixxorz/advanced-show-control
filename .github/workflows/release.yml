@@ -66,12 +66,13 @@ jobs:
             echo "No release notes found for ${release_tag}" >&2
             exit 1
           fi
-          printf '\n---\n\nThe Windows artifact is unsigned. The macOS artifact is ad-hoc signed, not Developer ID signed or notarized.\n' >> release-notes.md
+          printf '\n---\n\nWindows Setup.exe, MSI, and portable ZIP are unsigned and require 64-bit Windows 10 version 1703 or newer. The MSI installs for the current user. The macOS universal app ZIP is ad-hoc signed, not Developer ID signed or notarized. Applying an update will close and restart Advanced Show Control. Keep settings, logs, and show files outside installation directories. Channel JSON feeds and .nupkg files are updater assets.\n' >> release-notes.md
 
       - name: Download staged release artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/release
+          pattern: release-*
           merge-multiple: true
 
       - name: Create release
@@ -82,5 +83,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "Advanced Show Control ${GITHUB_REF_NAME}" \
             --notes-file release-notes.md \
-            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_Windows_x64.zip \
-            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_macOS_universal.zip
+            --prerelease=false --latest=true \
+            dist/release/*.nupkg dist/release/releases.*.json \
+            dist/release/*.msi dist/release/*.zip dist/release/*_Setup.exe

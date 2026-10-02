@@ -2,7 +2,10 @@
 	rust-fmt rust-lint rust-test rust-build \
 	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
 	docs-install docs-build docs-serve dev dev-watch gallery probe smoke \
-	visual-test visual-update package-macos package-windows
+	visual-test visual-update package-macos package-windows release-test \
+	cargo-setup cargo-cache-check cargo-cache-test
+
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 
 DOCS_VENV := .venv-docs
 DOCS_PYTHON := $(DOCS_VENV)/bin/python
@@ -16,6 +19,9 @@ help:
 	  '  make test                 Run app and development-tool tests' \
 	  '  make build                Build the app and development tools' \
 	  '  make check                Run CI-like formatting, lint, test, and build checks' \
+	  '  make cargo-setup          Share Cargo artifacts and repo-local sccache across worktrees' \
+	  '  make cargo-cache-check    Verify this checkout uses the shared Cargo setup' \
+	  '  make cargo-cache-test     Test worktree Cargo setup behavior' \
 	  '' \
 	  'Documentation targets:' \
 	  '  make docs-install         Install pinned documentation dependencies' \
@@ -29,7 +35,8 @@ help:
 	  '  make visual-test          Run GPUI native visual/component tests (macOS)' \
 	  '  make visual-update        Update reviewed native visual snapshots (macOS)' \
 	  '  make package-macos        Build an ad-hoc-signed universal macOS app archive' \
-	  '  make package-windows      Build an unsigned Windows x64 app archive' \
+	  '  make package-windows      Build Velopack Windows MSI, setup, ZIP, and update assets' \
+	  '  make release-test         Check release versions and updater payloads' \
 	  '' \
 	  'Development-tool targets:' \
 	  '  make probe                Run LV1 probe CLI (pass ARGS="...")' \
@@ -45,6 +52,21 @@ test: rust-test dev-tools-test
 build: rust-build dev-tools-build
 
 check: fmt lint test build
+
+cargo-setup:
+	$(PYTHON) scripts/cargo-setup.py
+
+cargo-cache-check:
+	$(PYTHON) scripts/cargo-setup.py --check
+
+cargo-cache-test:
+	$(PYTHON) -m unittest discover -s scripts/tests -p 'test_cargo_setup.py'
+
+# CI retains its existing runner-local Rust cache; this guard is for developer checkouts.
+ifneq ($(CI),true)
+rust-lint rust-test rust-build dev-tools-lint dev-tools-test dev-tools-build \
+	dev dev-watch gallery visual-test visual-update probe smoke package-macos package-windows: cargo-cache-check
+endif
 
 docs-install:
 	@test -x "$(DOCS_PYTHON)" || python3 -m venv "$(DOCS_VENV)"
@@ -98,10 +120,13 @@ visual-update:
 	ASC_UPDATE_NATIVE_VISUALS=1 cargo run -p advanced-show-control --features debug-tools --bin native-visual-test -- dist/visual
 
 package-macos:
-	./scripts/package-macos.sh "$(or $(RELEASE_ID),local)"
+	./scripts/package-macos.sh "$(or $(RELEASE_ID),local)" "$(RELEASE_VERSION)"
 
 package-windows:
-	powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -ReleaseId "$(or $(RELEASE_ID),local)"
+	pwsh -NoProfile -File scripts/package-windows.ps1 -ReleaseId "$(or $(RELEASE_ID),local)" -ReleaseVersion "$(RELEASE_VERSION)"
+
+release-test:
+	python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 probe:
 	cargo run --manifest-path dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)

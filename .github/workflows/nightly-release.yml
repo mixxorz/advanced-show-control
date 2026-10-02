@@ -99,13 +99,14 @@ jobs:
             else
               printf 'This is the first nightly release.\n'
             fi
-            printf '\n---\n\nThe Windows artifact is unsigned. The macOS artifact is ad-hoc signed, not Developer ID signed or notarized.\n'
+            printf '\n---\n\nWindows Setup.exe, MSI, and portable ZIP are unsigned and require 64-bit Windows 10 version 1703 or newer. The MSI installs for the current user. The macOS universal app ZIP is ad-hoc signed, not Developer ID signed or notarized. Applying an update will close and restart Advanced Show Control. Keep settings, logs, and show files outside installation directories. These updater feeds use nightly channels; numeric package versions follow UTC build time, not release tag precedence.\n'
           } > release-notes.md
 
       - name: Download staged release artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/release
+          pattern: release-*
           merge-multiple: true
 
       - name: Create nightly prerelease
@@ -120,6 +121,6 @@ jobs:
             --target "$SOURCE_SHA" \
             --title "Advanced Show Control Nightly ${release_date}" \
             --notes-file release-notes.md \
-            --prerelease \
-            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_Windows_x64.zip" \
-            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_macOS_universal.zip"
+            --prerelease --latest=false \
+            dist/release/*.nupkg dist/release/releases.*.json \
+            dist/release/*.msi dist/release/*.zip dist/release/*_Setup.exe

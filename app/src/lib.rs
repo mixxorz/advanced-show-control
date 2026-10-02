@@ -20,6 +20,7 @@ pub mod show_file;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
+pub mod updates;
 
 /// @cc [owner:mixxorz,label:architecture;testing] vegas-dev-tool-api
 /// The deterministic Vegas helpers MUST remain exported from the library crate so the separate

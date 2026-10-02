@@ -6,6 +6,8 @@ mod tests {
     fn default_settings_use_agreed_values() {
         let settings = AppSettings::default();
 
+        assert!(settings.automatically_check_for_updates);
+        assert!(!settings.include_nightly_updates);
         assert!(!settings.auto_load_last_show_file);
         assert!(!settings.auto_save_sessions);
         assert_eq!(settings.keyboard_shortcuts.go.key, "Space");
@@ -26,6 +28,28 @@ mod tests {
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
         assert_eq!(settings.asc_recall_interval_ms, 0);
+    }
+
+    #[test]
+    fn updater_preferences_default_when_missing_and_round_trip_camel_case() {
+        for json in [r#"{}"#, r#"{"autoSaveSessions":true}"#] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert!(settings.automatically_check_for_updates);
+            assert!(!settings.include_nightly_updates);
+        }
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"automaticallyCheckForUpdates":false,"includeNightlyUpdates":true}"#,
+        )
+        .unwrap();
+        assert!(!settings.automatically_check_for_updates);
+        assert!(settings.include_nightly_updates);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["automaticallyCheckForUpdates"], false);
+        assert_eq!(json["includeNightlyUpdates"], true);
+        assert_eq!(
+            serde_json::from_value::<AppSettings>(json).unwrap(),
+            settings
+        );
     }
 
     #[test]
@@ -156,6 +180,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct AppSettings {
+    pub automatically_check_for_updates: bool,
+    pub include_nightly_updates: bool,
     pub auto_load_last_show_file: bool,
     pub auto_save_sessions: bool,
     pub keyboard_shortcuts: KeyboardShortcutSettings,
@@ -171,9 +197,13 @@ pub struct AppSettings {
 /// Missing or newly introduced persisted fields MUST default to conservative application behavior:
 /// automatic loading/saving and extensive diagnostics off, 24-hour time, sensitivity 9,
 /// same-scene recall on with a 500 ms threshold, ASC recall interval 0 ms, and Space/C for Go/Cue.
+/// Automatic update checks MUST default on and experimental nightly updates off.
+/// Automatic checks MUST NOT imply automatic download, installation, or restart.
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            automatically_check_for_updates: true,
+            include_nightly_updates: false,
             auto_load_last_show_file: false,
             auto_save_sessions: false,
             keyboard_shortcuts: KeyboardShortcutSettings::default(),

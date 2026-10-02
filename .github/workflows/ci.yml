@@ -47,6 +47,16 @@ jobs:
       - name: Build native binaries
         run: make build
 
+      - name: Set up Python for release helper tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test release packaging helpers
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
       - name: Run native visual checks
         run: make visual-test
 
@@ -82,6 +92,16 @@ jobs:
 
       - name: Build app
         run: cargo build --workspace
+
+      - name: Set up Python for release helper tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test release packaging helpers
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Run development-tool checks
         shell: pwsh

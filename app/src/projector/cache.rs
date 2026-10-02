@@ -20,8 +20,8 @@ struct Lv1Projection {
 
 /// @cc [owner:mixxorz,label:architecture;state] projector-cache-ownership
 /// The cache MUST own only generation-bound LV1/Fade projection state, bounded native UI logs, and
-/// snapshot/log counters; app-lifetime Show, Scenes, Cue Lists, and Settings state MUST be read from
-/// `AppStateSnapshot` when a view is built rather than copied into this cache.
+/// snapshot/log counters; app-lifetime Show, Scenes, Cue Lists, Settings, and Updates state MUST be
+/// read from `AppStateSnapshot` when a view is built rather than copied into this cache.
 #[derive(Debug)]
 pub struct ProjectionCache {
     active_generation: u64,
@@ -283,6 +283,7 @@ impl ProjectionCache {
             show_file_dirty: state.show.show_file_dirty,
             show_file_last_saved_at: state.show.show_file_last_saved_at.clone(),
             settings: state.settings.clone(),
+            updates: state.updates.clone(),
             logs: self.logs.iter().cloned().collect(),
             last_event_at: state.show.last_event_at.clone(),
             state_version,

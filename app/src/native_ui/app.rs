@@ -12,6 +12,7 @@ use gpui_kit::{
 use tokio::sync::mpsc;
 
 use crate::projector::{AppViewState, ProjectionSubscription};
+use crate::updates::{UpdateInstallPlan, UpdateStatus};
 
 use super::connection::{
     ConnectionFocusRestore, ConnectionState, apply_latency_result, begin_automatic_latency_probes,
@@ -22,7 +23,9 @@ use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
 };
 use super::logs::LogsView;
-use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow, SaveShowAs};
+use super::menu::{
+    About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow, SaveShowAs, SoftwareUpdates,
+};
 #[cfg(target_os = "macos")]
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
@@ -45,6 +48,8 @@ pub struct AppRoot {
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     pending_save_command_id: Cell<Option<u64>>,
     session_guard: RefCell<SessionGuard>,
+    pending_update_preparation: Cell<Option<u64>>,
+    pending_update_install: RefCell<Option<UpdateInstallPlan>>,
 }
 
 impl AppRoot {
@@ -138,6 +143,8 @@ impl AppRoot {
             go_submissions,
             pending_save_command_id: Cell::new(None),
             session_guard: RefCell::new(SessionGuard::default()),
+            pending_update_preparation: Cell::new(None),
+            pending_update_install: RefCell::new(None),
         }
     }
 
@@ -188,6 +195,22 @@ impl AppRoot {
                 let snapshot = *snapshot;
                 if !self.presentation.accept_snapshot(snapshot.clone()) {
                     return;
+                }
+                let previous_update_status = self.latest_snapshot.borrow().updates.status.clone();
+                if previous_update_status != snapshot.updates.status {
+                    let message = match snapshot.updates.status {
+                        UpdateStatus::Available => Some(
+                            "An update is available. Open Software Updates in the session menu to download it.",
+                        ),
+                        UpdateStatus::Ready => Some(
+                            "The update is downloaded. Open Software Updates to update and restart.",
+                        ),
+                        UpdateStatus::UpToDate => Some("Advanced Show Control is up to date."),
+                        _ => None,
+                    };
+                    if let Some(message) = message {
+                        window.push_notification(Notification::info(message), cx);
+                    }
                 }
                 let connection_was_visible = self.connection.borrow().is_visible();
                 self.connection
@@ -303,6 +326,66 @@ impl AppRoot {
                 };
                 self.apply_guard_effect(effect, window, cx);
             }
+            UiEvent::UpdateInstallPrepared { command_id, result } => {
+                if self.pending_update_preparation.get() != Some(command_id) {
+                    return;
+                }
+                self.pending_update_preparation.set(None);
+                self.finish_command_event(
+                    command_id,
+                    result.as_ref().map(|_| ()).map_err(Clone::clone),
+                    window,
+                    cx,
+                );
+                match result {
+                    Ok(plan) if !self.action_blocked(window, cx) => {
+                        *self.pending_update_install.borrow_mut() = Some(plan);
+                        self.request_session_action(SessionAction::UpdateAndRestart, window, cx);
+                    }
+                    Ok(_) => window.push_notification(
+                        Notification::error(
+                            "The update was cancelled because another dialog opened.",
+                        ),
+                        cx,
+                    ),
+                    Err(_) => {}
+                }
+            }
+            UiEvent::UpdateShutdownPrepared {
+                command_id,
+                expected_revision,
+                expected_edit_epoch,
+                result,
+            } => {
+                if self.pending_update_preparation.get() != Some(command_id) {
+                    return;
+                }
+                self.pending_update_preparation.set(None);
+                self.finish_command_event(
+                    command_id,
+                    result.as_ref().map(|_| ()).map_err(Clone::clone),
+                    window,
+                    cx,
+                );
+                if let Ok(plan) = result {
+                    if self.action_blocked(window, cx) {
+                        window.push_notification(
+                            Notification::error(
+                                "The update was cancelled because another dialog opened.",
+                            ),
+                            cx,
+                        );
+                    } else {
+                        *self.pending_update_install.borrow_mut() = Some(plan);
+                        self.arm_update_and_quit(
+                            expected_revision,
+                            expected_edit_epoch,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
             UiEvent::LatencyMeasured {
                 session_id,
                 attempt_id,
@@ -394,11 +477,13 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if modal_surface_active(
-            window.has_active_prompt(),
-            window.has_active_dialog(cx),
-            self.connection.borrow().is_visible() || self.shell.read(cx).modal_open(cx),
-        ) {
+        if self.pending_update_preparation.get().is_some()
+            || modal_surface_active(
+                window.has_active_prompt(),
+                window.has_active_dialog(cx),
+                self.connection.borrow().is_visible() || self.shell.read(cx).modal_open(cx),
+            )
+        {
             return false;
         }
         let (accept, effect) = self.session_guard.borrow_mut().request_close();
@@ -464,10 +549,16 @@ impl AppRoot {
                 (SessionAction::NewFromTemplate, None) => self.new_show_from_template(cx),
                 (SessionAction::Open, None) => self.open_show(cx),
                 (SessionAction::Quit, None) => cx.quit(),
+                (SessionAction::UpdateAndRestart, revision) => {
+                    self.continue_update_restart(revision, window, cx);
+                }
             },
             GuardEffect::Error(message) => {
                 window.push_notification(Notification::error(message), cx);
             }
+        }
+        if !self.session_guard.borrow().is_pending() {
+            self.pending_update_install.borrow_mut().take();
         }
     }
 
@@ -737,6 +828,181 @@ impl AppRoot {
         window.has_active_prompt()
             || self.modal_open(window, cx)
             || self.session_guard.borrow().is_pending()
+            || self.pending_update_preparation.get().is_some()
+    }
+
+    /// @cc [owner:mixxorz,label:product;persistence] update-restart-uses-session-guard
+    /// An update MUST be armed only by an explicit UpdateAndRestart continuation after the existing
+    /// dirty-session guard admits it. A clean continuation MUST arm under exact revision admission;
+    /// cancellation and stale preflight MUST NOT hand an update to the external installer. The
+    /// disconnect wait MUST carry the validated submission epoch as well as owner revision, and
+    /// either mismatch MUST restart preflight before arming.
+    fn continue_update_restart(
+        &mut self,
+        revision: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(plan) = self.pending_update_install.borrow_mut().take() {
+            self.pending_update_preparation
+                .set(Some(self.dispatcher.disconnect_for_update(
+                    plan,
+                    revision,
+                    revision.map(|_| self.dispatcher.persisted_edit_epoch()),
+                )));
+        } else {
+            window.push_notification(
+                Notification::error("The downloaded update is no longer available."),
+                cx,
+            );
+        }
+    }
+
+    fn arm_update_and_quit(
+        &mut self,
+        revision: Option<u64>,
+        expected_edit_epoch: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_update_install.borrow().is_none() {
+            window.push_notification(
+                Notification::error("The downloaded update is no longer available."),
+                cx,
+            );
+            return;
+        }
+        if update_edit_epoch_is_stale(expected_edit_epoch, self.dispatcher.persisted_edit_epoch()) {
+            let effect = self
+                .session_guard
+                .borrow_mut()
+                .request(SessionAction::UpdateAndRestart);
+            self.apply_guard_effect(effect, window, cx);
+            return;
+        }
+        let dispatcher = self.dispatcher.clone();
+        let handoff_error = RefCell::new(None);
+        let arm_and_quit = || {
+            if let Some(plan) = self.pending_update_install.borrow_mut().take() {
+                match dispatcher.arm_update_install(plan) {
+                    Ok(()) => cx.quit(),
+                    Err(error) => *handoff_error.borrow_mut() = Some(error),
+                }
+            }
+        };
+        if let Some(revision) = revision {
+            if !self.dispatcher.admit_guarded_quit(revision, arm_and_quit) {
+                let effect = self
+                    .session_guard
+                    .borrow_mut()
+                    .request(SessionAction::UpdateAndRestart);
+                self.apply_guard_effect(effect, window, cx);
+            }
+        } else {
+            arm_and_quit();
+        }
+        if let Some(error) = handoff_error.into_inner() {
+            window.push_notification(Notification::error(error), cx);
+        }
+    }
+
+    fn on_software_updates(
+        &mut self,
+        _: &SoftwareUpdates,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.action_blocked(window, cx) {
+            return;
+        }
+        let update = self.latest_snapshot.borrow().updates.clone();
+        match update.status {
+            UpdateStatus::Ready => {
+                let version = update
+                    .available_version
+                    .as_deref()
+                    .unwrap_or("the new version");
+                let detail = format!(
+                    "Install {version}? Advanced Show Control will disconnect from LV1, quit, and restart. You will be asked to save any unsaved session changes."
+                );
+                let response = window.prompt(
+                    PromptLevel::Warning,
+                    "Update and restart?",
+                    Some(&detail),
+                    &["Update and restart", "Cancel"],
+                    cx,
+                );
+                cx.spawn(async move |this, cx| {
+                    if response.await != Ok(0) {
+                        return;
+                    }
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if !this.action_blocked(window, cx) {
+                            this.pending_update_preparation
+                                .set(Some(this.dispatcher.prepare_update_install()));
+                        }
+                    });
+                })
+                .detach();
+            }
+            UpdateStatus::Available => {
+                let version = update
+                    .available_version
+                    .as_deref()
+                    .unwrap_or("a new version");
+                let detail = format!(
+                    "Version {version} is available. Downloading will not close the app; installation requires a separate Update and restart confirmation."
+                );
+                let response = window.prompt(
+                    PromptLevel::Info,
+                    "Update available",
+                    Some(&detail),
+                    &["Download update", "Cancel"],
+                    cx,
+                );
+                cx.spawn(async move |this, cx| {
+                    if response.await != Ok(0) {
+                        return;
+                    }
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if !this.action_blocked(window, cx) {
+                            this.dispatcher.dispatch(|commands| async move {
+                                commands.download_update().await
+                            });
+                        }
+                    });
+                })
+                .detach();
+            }
+            UpdateStatus::Checking | UpdateStatus::Downloading => {
+                let detail = if update.status == UpdateStatus::Checking {
+                    "Checking for updates…"
+                } else {
+                    "Downloading the update. You can continue using the app."
+                };
+                let _response = window.prompt(
+                    PromptLevel::Info,
+                    "Software Updates",
+                    Some(detail),
+                    &["OK"],
+                    cx,
+                );
+            }
+            UpdateStatus::Unavailable => {
+                let detail = update.error.as_deref().unwrap_or("Updates are unavailable in this copy of Advanced Show Control. Install the latest release from GitHub to enable updates.");
+                let _response = window.prompt(
+                    PromptLevel::Info,
+                    "Software Updates",
+                    Some(detail),
+                    &["OK"],
+                    cx,
+                );
+            }
+            _ => {
+                self.dispatcher
+                    .dispatch(|commands| async move { commands.check_for_updates().await });
+            }
+        }
     }
 
     fn on_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
@@ -892,6 +1158,10 @@ impl AppRoot {
     }
 }
 
+fn update_edit_epoch_is_stale(expected: Option<u64>, current: u64) -> bool {
+    expected.is_some_and(|epoch| epoch != current)
+}
+
 fn session_query_is_stale(
     query_edit_epoch: u64,
     current_edit_epoch: u64,
@@ -923,8 +1193,11 @@ fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState
 
 fn about_detail() -> &'static str {
     concat!(
-        "Version ",
-        env!("CARGO_PKG_VERSION"),
+        "Release ",
+        env!("ASC_RELEASE_ID"),
+        " (",
+        env!("ASC_RELEASE_VERSION"),
+        ")",
         "\n\nGPUI Kit desktop control for Waves eMotion LV1 scene fades.",
         "\n\nGPL-3.0-or-later",
         "\nhttps://mitchel.me/advanced-show-control/"
@@ -964,6 +1237,7 @@ impl Render for AppRoot {
             .key_context(global_key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_software_updates))
             .on_action(cx.listener(Self::on_new_show))
             .on_action(cx.listener(Self::on_new_show_from_template))
             .on_action(cx.listener(Self::on_open_show))
@@ -1004,6 +1278,7 @@ mod tests {
         DIRTY_SESSION_PROMPT_CHOICES, about_detail, cue_completion_matches_session,
         dirty_session_prompt_title, ensure_show_file_extension, is_show_file_path,
         modal_surface_active, session_query_is_stale, suggested_save_file_name,
+        update_edit_epoch_is_stale,
     };
     use crate::projector::AppViewState;
 
@@ -1094,12 +1369,22 @@ mod tests {
     }
 
     #[test]
+    fn queued_edits_after_update_preflight_require_another_query() {
+        assert!(!update_edit_epoch_is_stale(Some(7), 7));
+        assert!(update_edit_epoch_is_stale(Some(7), 8));
+        assert!(!update_edit_epoch_is_stale(None, 8)); // Explicit Discard is unconditional.
+    }
+
+    #[test]
     fn about_detail_identifies_the_project_and_license() {
         assert_eq!(
             about_detail(),
             concat!(
-                "Version ",
-                env!("CARGO_PKG_VERSION"),
+                "Release ",
+                env!("ASC_RELEASE_ID"),
+                " (",
+                env!("ASC_RELEASE_VERSION"),
+                ")",
                 "\n\nGPUI Kit desktop control for Waves eMotion LV1 scene fades.",
                 "\n\nGPL-3.0-or-later",
                 "\nhttps://mitchel.me/advanced-show-control/"

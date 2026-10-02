@@ -36,6 +36,8 @@ pub struct ApplicationCommandContext {
     scenes: ScenesHandle,
     cue_lists: CueListsHandle,
     ui_logs: tokio::sync::broadcast::Sender<UiLogEvent>,
+    updates: Option<crate::updates::UpdatesHandle>,
+    update_install_queue: crate::updates::UpdateInstallQueue,
 }
 
 impl ApplicationCommandContext {
@@ -54,7 +56,59 @@ impl ApplicationCommandContext {
             scenes,
             cue_lists,
             ui_logs,
+            updates: None,
+            update_install_queue: Default::default(),
         }
+    }
+
+    pub fn with_updates(
+        mut self,
+        handle: crate::updates::UpdatesHandle,
+        queue: crate::updates::UpdateInstallQueue,
+    ) -> Self {
+        self.updates = Some(handle);
+        self.update_install_queue = queue;
+        self
+    }
+
+    pub async fn check_for_updates(&self) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        self.send_updates(crate::updates::UpdatesCommand::Check { reply })
+            .await?;
+        receive_nested(response).await
+    }
+
+    pub async fn download_update(&self) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        self.send_updates(crate::updates::UpdatesCommand::Download { reply })
+            .await?;
+        receive_nested(response).await
+    }
+
+    pub async fn prepare_update_install(
+        &self,
+    ) -> Result<crate::updates::UpdateInstallPlan, String> {
+        let (reply, response) = oneshot::channel();
+        self.send_updates(crate::updates::UpdatesCommand::PrepareInstall { reply })
+            .await?;
+        receive_nested(response).await
+    }
+
+    /// Bounded in-memory admission only; the native host owns the final dirty-session gate.
+    pub fn arm_update_install(
+        &self,
+        plan: crate::updates::UpdateInstallPlan,
+    ) -> Result<(), String> {
+        self.update_install_queue.arm(plan)
+    }
+
+    async fn send_updates(&self, command: crate::updates::UpdatesCommand) -> Result<(), String> {
+        self.updates
+            .as_ref()
+            .ok_or_else(|| "Updates are unavailable.".to_string())?
+            .send(command)
+            .await
+            .map_err(|_| "Updates are unavailable.".to_string())
     }
 
     pub async fn frontend_ready(&self) -> Result<ProjectionSubscription, String> {
@@ -694,6 +748,58 @@ mod tests {
         settings_task.spawn();
         let (ui_logs, _) = tokio::sync::broadcast::channel(8);
         ApplicationCommandContext::new(lifecycle, show, settings, ui_logs)
+    }
+
+    #[tokio::test]
+    async fn updater_adapters_dispatch_explicit_owner_commands() {
+        let (show, _show_commands) = tokio::sync::mpsc::channel(4);
+        let (updates, mut commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show).with_updates(updates, Default::default());
+        let owner = tokio::spawn(async move {
+            let crate::updates::UpdatesCommand::Check { reply } = commands.recv().await.unwrap()
+            else {
+                panic!("expected updater check");
+            };
+            reply.send(Ok(())).unwrap();
+            let crate::updates::UpdatesCommand::Download { reply } = commands.recv().await.unwrap()
+            else {
+                panic!("expected explicit updater download");
+            };
+            reply.send(Ok(())).unwrap();
+            let crate::updates::UpdatesCommand::PrepareInstall { reply } =
+                commands.recv().await.unwrap()
+            else {
+                panic!("expected deferred install preparation");
+            };
+            reply
+                .send(Err("No downloaded update is ready to install.".into()))
+                .unwrap();
+        });
+        context.check_for_updates().await.unwrap();
+        context.download_update().await.unwrap();
+        assert_eq!(
+            context.prepare_update_install().await.unwrap_err(),
+            "No downloaded update is ready to install."
+        );
+        owner.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn contexts_without_updates_preserve_the_existing_constructor() {
+        let (show, _commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show);
+        assert_eq!(
+            context.check_for_updates().await.unwrap_err(),
+            "Updates are unavailable."
+        );
+        assert_eq!(
+            context.download_update().await.unwrap_err(),
+            "Updates are unavailable."
+        );
+        assert_eq!(
+            context.prepare_update_install().await.unwrap_err(),
+            "Updates are unavailable."
+        );
     }
 
     #[tokio::test]

@@ -1,0 +1,17 @@
+@cc [owner:mixxorz,label:release] velopack-installation-identity
+Release packages MUST use Velopack package identity `com.advancedshowcontrol.app` on both platforms
+and preserve the existing macOS bundle identifier. Windows installers MUST be per-user. Velopack
+MUST own installation layout, lifecycle hooks, updater metadata and update helpers.
+
+@cc [owner:mixxorz,label:release] release-build-time-version
+One shared numeric release version MUST be resolved once per cross-platform release build from
+unsigned 32-bit UTC epoch seconds since 2020-01-01, encoded as 8-bit major, 8-bit minor and 16-bit
+patch components. Both platforms MUST embed and package that same version. Explicit versions MUST
+fit those limits. Release tags label assets; stable/nightly eligibility MUST be conveyed by distinct
+platform channels, not by tag-based version precedence.
+
+@cc [owner:mixxorz,label:product] velopack-user-data-preservation
+Packaging MUST NOT include or remove production application settings, diagnostic logs or user-owned
+`.ascs` show files. Installer smoke tests MUST refuse existing installations or production app-data
+and MUST run only on disposable CI hosts with separate test data. Application data MUST remain
+outside Velopack-owned installation directories.

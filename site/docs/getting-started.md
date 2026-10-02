@@ -4,9 +4,13 @@ This guide takes you from installation to your first scene fade. Before you begi
 
 ## 1. Download and install
 
-Download the appropriate archive from the [latest Advanced Show Control release](https://github.com/mixxorz/advanced-show-control/releases/latest). The native app requires macOS 15 or newer or Windows 10 or newer.
+Download the appropriate installer or archive from the [latest Advanced Show Control release](https://github.com/mixxorz/advanced-show-control/releases/latest). The native app requires macOS 15 or newer or 64-bit Windows 10 version 1703 or newer.
 
-On Windows, extract the x64 ZIP archive and run **Advanced Show Control.exe**. On macOS, extract the universal ZIP archive, move **Advanced Show Control.app** to Applications if desired, and open it.
+On Windows, run the x64 **MSI installer** for a per-user installation and Start-menu shortcut. A setup executable and portable ZIP are also available. On macOS, extract the universal ZIP archive, move **Advanced Show Control.app** to Applications, and open it.
+
+New installations support in-app updates. In **Settings**, automatic checks are on and nightly updates are off by default. Open **Software Updates…** in the session menu to download an update, then confirm **Update and restart** when you are ready to stop ASC. Unsaved changes still offer Save, Don’t Save, and Cancel. Checks never install updates silently.
+
+If your copy does not support in-app updates, install the latest release once to enable them. Existing settings retain their app-data location. Keep show files outside the installation directory, which is replaced during updates.
 
 The Windows download is unsigned. The macOS app is ad-hoc signed, not Developer ID signed or notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
 

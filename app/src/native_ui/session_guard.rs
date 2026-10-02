@@ -6,6 +6,7 @@ pub(super) enum SessionAction {
     NewFromTemplate,
     Open,
     Quit,
+    UpdateAndRestart,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,6 +316,32 @@ mod tests {
             .to_string(),
             persisted_session_revision: 9,
         }
+    }
+
+    #[test]
+    fn update_and_restart_requires_clean_preflight_and_cancels_like_quit() {
+        let mut guard = SessionGuard::default();
+        assert_eq!(
+            guard.request(SessionAction::UpdateAndRestart),
+            GuardEffect::QueryState
+        );
+        guard.query_started(1);
+        assert_eq!(
+            guard.state_query_finished(1, Ok(status(true, true))),
+            GuardEffect::Prompt("Show.ascs".to_string())
+        );
+        assert_eq!(guard.choose(GuardChoice::Cancel), GuardEffect::None);
+        assert!(!guard.is_pending());
+
+        guard.request(SessionAction::UpdateAndRestart);
+        guard.query_started(2);
+        assert_eq!(
+            guard.state_query_finished(2, Ok(status(false, true))),
+            GuardEffect::Continue {
+                action: SessionAction::UpdateAndRestart,
+                expected_persisted_revision: Some(9),
+            }
+        );
     }
 
     #[test]
