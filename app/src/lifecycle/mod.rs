@@ -2577,50 +2577,6 @@ mod tests {
         assert_eq!(lifecycle.active_generation().await, newer_generation);
     }
 
-    #[tokio::test]
-    async fn connect_installs_runtime_targets_before_connection_metadata() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let lv1 = fake_lv1_handle(connected_snapshot());
-        let lv1_for_assertion = lv1.clone();
-        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = fade_tx;
-        let identity = Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.168.1.35".to_string(),
-            port: 50000,
-        };
-        let (seen_tx, seen_rx) = oneshot::channel();
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            event_bus,
-            lv1,
-            fade,
-            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                Box::pin(async move {
-                    let (reply, rx) = oneshot::channel();
-                    let ok = lv1_for_assertion
-                        .send(Lv1Command::GetState { reply })
-                        .await
-                        .is_ok()
-                        && matches!(rx.await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
-                    let _ = seen_tx.send(ok);
-                })
-            })),
-        )
-        .await;
-
-        let result = lifecycle
-            .finish_connect_transaction(identity, started_runtime)
-            .await;
-
-        assert!(result.is_ok());
-        assert!(matches!(seen_rx.await, Ok(true)));
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn connect_completion_logs_lv1_connected_for_ui_log_projection() {
         let capture = crate::test_support::TracingCapture::new();

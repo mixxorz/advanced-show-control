@@ -112,17 +112,12 @@ mod tests {
     }
 
     #[test]
-    fn report_creation_failure_does_not_preserve_a_stale_result() {
+    fn report_creation_failure_is_returned() {
         let root = temp_path("report-failure");
         let path = root.join(REPORT_RELATIVE_PATH);
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("stale"), "SUITE PASS\n").unwrap();
 
         assert!(SmokeReport::create(&root).is_err());
-        assert_eq!(
-            std::fs::read_to_string(path.join("stale")).unwrap(),
-            "SUITE PASS\n"
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -2380,6 +2380,41 @@ mod tests {
             response
         }
 
+        async fn begin_fade(
+            &mut self,
+            config: FadeConfig,
+            snapshot: Lv1StateSnapshot,
+        ) -> oneshot::Receiver<Result<(), RecallReadinessError>> {
+            let (reply, accepted) = oneshot::channel();
+            let (completion, ready) = oneshot::channel();
+            self.engine
+                .send(FadeCommand::RecallSceneFade {
+                    config,
+                    same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                    readiness: RecallReadinessRequest {
+                        deadline: Instant::now() + Duration::from_secs(5),
+                        completion: Some(completion),
+                    },
+                    reply: Some(reply),
+                })
+                .await
+                .unwrap();
+            self.snapshot_request().await.send(snapshot).unwrap();
+            assert_eq!(accepted.await.unwrap(), Ok(()));
+            ready
+        }
+
+        async fn next_batch(&mut self) -> Vec<Lv1ParameterWrite> {
+            match tokio::time::timeout(Duration::from_secs(1), self.commands.recv())
+                .await
+                .expect("fade should send a write batch")
+                .unwrap()
+            {
+                Lv1Command::WriteBatch(writes) => writes,
+                _ => panic!("expected a write batch"),
+            }
+        }
+
         async fn snapshot_request(&mut self) -> oneshot::Sender<Lv1StateSnapshot> {
             match tokio::time::timeout(Duration::from_secs(1), self.commands.recv())
                 .await
@@ -3280,12 +3315,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn tick_feedback_uses_last_admitted_value_before_and_after_capacity_wait() {
         let mut fixture = ConnectionFixture::new().await;
-        let (reply, accepted) = oneshot::channel();
-        let (completion, ready) = oneshot::channel();
-        fixture
-            .engine
-            .send(FadeCommand::RecallSceneFade {
-                config: fade_config(
+        let ready = fixture
+            .begin_fade(
+                fade_config(
                     scene(1, "Intro"),
                     vec![FadeTarget {
                         group: 0,
@@ -3295,21 +3327,9 @@ mod tests {
                     }],
                     1_000,
                 ),
-                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-                readiness: RecallReadinessRequest {
-                    deadline: Instant::now() + Duration::from_secs(5),
-                    completion: Some(completion),
-                },
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        fixture
-            .snapshot_request()
-            .await
-            .send(connected_snapshot(0, vec![channel_info(0, -40.0, None)]))
-            .unwrap();
-        assert_eq!(accepted.await.unwrap(), Ok(()));
+                connected_snapshot(0, vec![channel_info(0, -40.0, None)]),
+            )
+            .await;
         fixture.fill_mailbox().await;
         fixture.release_readiness();
         assert_eq!(ready.await.unwrap(), Ok(()));
@@ -3329,14 +3349,7 @@ mod tests {
             },
         );
         fixture.release_mailbox(false).await;
-        let Lv1Command::WriteBatch(writes) =
-            tokio::time::timeout(Duration::from_secs(1), fixture.commands.recv())
-                .await
-                .expect("matching feedback must leave the target active")
-                .unwrap()
-        else {
-            panic!("expected admitted intermediate write");
-        };
+        let writes = fixture.next_batch().await;
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].parameter, Lv1WriteParameter::FaderDb);
         let admitted_value = writes[0].value;
@@ -3360,14 +3373,7 @@ mod tests {
             },
         );
         tokio::time::advance(Duration::from_millis(500)).await;
-        let Lv1Command::WriteBatch(writes) =
-            tokio::time::timeout(Duration::from_secs(1), fixture.commands.recv())
-                .await
-                .expect("matching feedback must leave the target active")
-                .unwrap()
-        else {
-            panic!("expected exact final write after matching feedback");
-        };
+        let writes = fixture.next_batch().await;
         assert_eq!(
             writes,
             vec![Lv1ParameterWrite {
@@ -3378,21 +3384,18 @@ mod tests {
             }]
         );
         let events = fixture.terminal_events().await;
-        assert!(events.iter().any(|event| matches!(
-            event,
-            FadeEvent::ChannelCompleted {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-            }
-        )));
-        assert!(matches!(events.last(), Some(FadeEvent::FadeCompleted)));
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            FadeEvent::ChannelOverride { .. }
-                | FadeEvent::ChannelCancelled { .. }
-                | FadeEvent::FadeAborted
-        )));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                FadeEvent::FadeStarted,
+                FadeEvent::ChannelCompleted {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                },
+                FadeEvent::FadeCompleted,
+            ]
+        ));
     }
 
     #[tokio::test(start_paused = true)]
@@ -4530,23 +4533,35 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timed_and_requested_completion_send_exact_targets_below_every_minimum_delta() {
-        for finish_early in [false, true] {
+    async fn timed_and_requested_completion_send_exact_parameter_targets() {
+        for (finish_early, tiny_delta) in [(false, true), (true, true), (true, false)] {
             let targets = [
-                (FadeParameter::FaderDb, -19.99, Lv1WriteParameter::FaderDb),
-                (FadeParameter::Pan, 0.1, Lv1WriteParameter::Pan),
-                (FadeParameter::Balance, -0.1, Lv1WriteParameter::Balance),
-                (FadeParameter::Width, 1.001, Lv1WriteParameter::Width),
-            ];
+                (
+                    FadeParameter::FaderDb,
+                    -19.99,
+                    -10.0,
+                    Lv1WriteParameter::FaderDb,
+                ),
+                (FadeParameter::Pan, 0.1, 12.0, Lv1WriteParameter::Pan),
+                (
+                    FadeParameter::Balance,
+                    -0.1,
+                    -11.0,
+                    Lv1WriteParameter::Balance,
+                ),
+                (FadeParameter::Width, 1.001, 0.75, Lv1WriteParameter::Width),
+            ]
+            .map(|(parameter, tiny, large, write_parameter)| {
+                (
+                    parameter,
+                    if tiny_delta { tiny } else { large },
+                    write_parameter,
+                )
+            });
             let mut channel = channel_info(1, -20.0, Some(0.0));
             channel.balance = Some(0.0);
             channel.width = Some(1.0);
-            let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
-                connected_snapshot(40, vec![channel.clone()]),
-                connected_snapshot(42, vec![channel]),
-            ])
-            .await;
-            let mut events = event_bus.subscribe();
+            let mut fixture = ConnectionFixture::new().await;
             let config = fade_config(
                 scene(17, "Verse"),
                 targets
@@ -4560,28 +4575,45 @@ mod tests {
                     .collect(),
                 1_000,
             );
-            start_fade(&engine, config.clone()).await.unwrap();
+            let ready = fixture
+                .begin_fade(config.clone(), connected_snapshot(0, vec![channel.clone()]))
+                .await;
+            fixture.release_readiness();
+            assert_eq!(ready.await.unwrap(), Ok(()));
             let started_at = Instant::now();
-            publish_ping(&event_bus, 7, 41);
-            publish_ping(&event_bus, 7, 42);
-            tokio::task::yield_now().await;
             tokio::time::advance(Duration::from_millis(200)).await;
             tokio::task::yield_now().await;
-            assert!(
-                write_rx.try_recv().is_err(),
-                "tiny intermediate deltas must be suppressed"
-            );
+            if tiny_delta {
+                assert!(
+                    fixture.commands.try_recv().is_err(),
+                    "tiny intermediate deltas must be suppressed"
+                );
+            } else {
+                let intermediate = fixture.next_batch().await;
+                assert_eq!(intermediate.len(), targets.len());
+                assert!(
+                    intermediate
+                        .iter()
+                        .zip(targets)
+                        .all(
+                            |(write, (_, target, parameter))| write.parameter == parameter
+                                && write.value != target
+                        )
+                );
+            }
 
             if finish_early {
-                start_fade(&engine, config).await.unwrap();
-                publish_ping(&event_bus, 7, 43);
-                publish_ping(&event_bus, 7, 44);
-                tokio::task::yield_now().await;
+                let ready = fixture
+                    .begin_fade(config, connected_snapshot(2, vec![channel]))
+                    .await;
+                publish_ping(&fixture.bus, 7, 3);
+                publish_ping(&fixture.bus, 7, 4);
+                assert_eq!(ready.await.unwrap(), Ok(()));
                 tokio::time::advance(Duration::from_millis(40)).await;
             } else {
                 tokio::time::advance(Duration::from_millis(800)).await;
             }
-            let writes = next_write_batch(&mut write_rx).await;
+            let writes = fixture.next_batch().await;
             if finish_early {
                 assert!(
                     started_at.elapsed() < Duration::from_millis(1_000),
@@ -4599,103 +4631,31 @@ mod tests {
                         value: *target,
                     })
                     .collect::<Vec<_>>(),
-                "finish_early={finish_early} must bypass minimum-delta suppression"
+                "finish_early={finish_early}, tiny_delta={tiny_delta} must send exact targets"
             );
-            let mut completed = Vec::new();
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    match events.recv().await.unwrap() {
-                        AppEvent::Fade {
-                            generation: 7,
-                            event:
-                                FadeEvent::ChannelCompleted {
-                                    group: 0,
-                                    channel: 1,
-                                    parameter,
-                                },
-                        } => completed.push(parameter),
-                        AppEvent::Fade {
-                            generation: 7,
-                            event: FadeEvent::FadeCompleted,
-                        } => break,
-                        AppEvent::Fade {
-                            event:
-                                FadeEvent::ChannelOverride { .. }
-                                | FadeEvent::ChannelCancelled { .. }
-                                | FadeEvent::FadeAborted,
-                            ..
-                        } => panic!("exact completion must not cancel targets"),
-                        _ => {}
-                    }
-                }
-            })
-            .await
-            .expect("tiny-delta targets should complete");
-            assert_eq!(completed, targets.map(|(parameter, _, _)| parameter));
-        }
-    }
-
-    #[tokio::test(start_paused = true, flavor = "current_thread")]
-    async fn repeated_scene_recall_finishes_all_parameter_families_at_exact_targets() {
-        let targets = [
-            (FadeParameter::FaderDb, -10.0, Lv1WriteParameter::FaderDb),
-            (FadeParameter::Pan, 12.0, Lv1WriteParameter::Pan),
-            (FadeParameter::Balance, -11.0, Lv1WriteParameter::Balance),
-            (FadeParameter::Width, 0.75, Lv1WriteParameter::Width),
-        ];
-        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
-            connected_snapshot(40, vec![channel_info(1, -20.0, Some(0.0))]),
-            connected_snapshot(42, vec![channel_info(1, -20.0, Some(0.0))]),
-        ])
-        .await;
-        let repeated_scene_a = fade_config(
-            scene(17, "Verse"),
-            targets
+            let events = fixture.terminal_events().await;
+            let completed = events
                 .iter()
-                .map(|(parameter, target, _)| FadeTarget {
-                    group: 0,
-                    channel: 1,
-                    parameter: *parameter,
-                    target: *target,
+                .filter_map(|event| match event {
+                    FadeEvent::ChannelCompleted {
+                        group,
+                        channel,
+                        parameter,
+                    } => Some((*group, *channel, *parameter)),
+                    _ => None,
                 })
-                .collect(),
-            1_000,
-        );
-
-        start_fade(&engine, repeated_scene_a.clone())
-            .await
-            .expect("initial Scene A recall should validate");
-        publish_ping(&event_bus, 7, 41);
-        publish_ping(&event_bus, 7, 42);
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(250)).await;
-        tokio::task::yield_now().await;
-        while write_rx.try_recv().is_ok() {}
-
-        start_fade(&engine, repeated_scene_a)
-            .await
-            .expect("repeated Scene A recall should validate");
-        publish_ping(&event_bus, 7, 43);
-        publish_ping(&event_bus, 7, 44);
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
-
-        let writes = next_write_batch(&mut write_rx).await;
-        for (parameter, target, write_parameter) in targets {
-            assert!(
-                writes.contains(&Lv1ParameterWrite {
-                    group: 0,
-                    channel: 1,
-                    parameter: write_parameter,
-                    value: target,
-                }),
-                "{parameter:?} should finish at its exact target"
+                .collect::<Vec<_>>();
+            assert_eq!(
+                completed,
+                targets.map(|(parameter, _, _)| (0, 1, parameter))
             );
+            assert!(matches!(events.last(), Some(FadeEvent::FadeCompleted)));
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                FadeEvent::ChannelOverride { .. }
+                    | FadeEvent::ChannelCancelled { .. }
+                    | FadeEvent::FadeAborted
+            )));
         }
     }
 
