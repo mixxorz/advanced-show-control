@@ -1387,7 +1387,9 @@ mod tests {
         use super::{About, AppRoot, CueListsView, GoSubmissionGuard, ScenesView, SettingsView};
         use crate::native_ui::{CommandDispatcher, ui_event_channel};
 
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        // Keep unrelated startup commands queued: this test drives only GPUI's action and
+        // prompt path, whose deterministic scheduler must not be woken by a Tokio worker.
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
