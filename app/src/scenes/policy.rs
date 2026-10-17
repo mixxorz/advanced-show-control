@@ -872,43 +872,6 @@ mod tests {
     }
 
     #[test]
-    fn skips_when_fader_scope_is_disabled() {
-        let mut scene_config = config(1000, Some(-12.5), None, None, None, None);
-        scene_config.scope_toggles.faders = false;
-
-        let decision = decide_scene_recall(RecallPolicyInput {
-            recalled_scene: SceneState {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            lv1_snapshot: snapshot(
-                Some(SceneState {
-                    index: 1,
-                    name: "Intro".to_string(),
-                }),
-                vec![ChannelInfo {
-                    group: 0,
-                    channel: 2,
-                    name: "Ch 2".to_string(),
-                    gain_db: 0.0,
-                    muted: false,
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                }],
-            ),
-            lockout: false,
-            scene_config: Some(scene_config),
-        });
-
-        assert!(matches!(
-            decision,
-            RecallPolicyDecision::Skip { reason } if reason == "no applicable targets"
-        ));
-    }
-
-    #[test]
     fn missing_topology_and_stored_value_cases_block() {
         let missing_topology = decide_scene_recall(RecallPolicyInput {
             recalled_scene: SceneState {

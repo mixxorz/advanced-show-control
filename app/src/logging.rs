@@ -454,22 +454,57 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_file_gate_tracks_extensive_diagnostics_setting() {
+    fn diagnostics_setting_filters_emitted_records_without_changing_ui_delivery() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer_capture = captured.clone();
         let gate = DiagnosticFileGate::bootstrap_debug();
-        let disabled = crate::settings::AppSettings {
-            enable_extensive_diagnostics: false,
-            ..Default::default()
-        };
-        let enabled = crate::settings::AppSettings {
-            enable_extensive_diagnostics: true,
-            ..Default::default()
-        };
+        let (tx, mut ui_logs) = broadcast::channel(16);
+        let subscriber = registry()
+            .with(
+                fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(move || CapturedWriter(writer_capture.clone()))
+                    .with_filter(gate.clone()),
+            )
+            .with(UiLogLayer { tx });
 
-        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
-        apply_settings_to_diagnostic_file_gate(&gate, &disabled);
-        assert_eq!(gate.min_level(), LevelFilter::INFO);
-        apply_settings_to_diagnostic_file_gate(&gate, &enabled);
-        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
+        // Reuse the same callsites across settings changes, including re-enabling DEBUG.
+        fn emit(phase: &str) {
+            tracing::debug!("diagnostic {phase}");
+            tracing::info!("visible {phase}");
+        }
+        with_default(subscriber, || {
+            emit("bootstrap");
+            apply_settings_to_diagnostic_file_gate(
+                &gate,
+                &crate::settings::AppSettings {
+                    enable_extensive_diagnostics: false,
+                    ..Default::default()
+                },
+            );
+            emit("disabled");
+            apply_settings_to_diagnostic_file_gate(
+                &gate,
+                &crate::settings::AppSettings {
+                    enable_extensive_diagnostics: true,
+                    ..Default::default()
+                },
+            );
+            emit("enabled");
+        });
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("diagnostic bootstrap"));
+        assert!(!output.contains("diagnostic disabled"));
+        assert!(output.contains("diagnostic enabled"));
+        for phase in ["bootstrap", "disabled", "enabled"] {
+            let message = format!("visible {phase}");
+            assert!(output.contains(&message));
+            let event = ui_logs.try_recv().unwrap();
+            assert_eq!(event.message, message);
+            assert_eq!(event.severity, LogSeverity::Info);
+        }
+        assert!(ui_logs.try_recv().is_err());
     }
 
     #[test]

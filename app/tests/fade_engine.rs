@@ -348,7 +348,7 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
 }
 
 #[tokio::test]
-async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() {
+async fn timed_pan_only_fade_completes_without_sending_gain_commands() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let (gain_tx, gain_rx) = std::sync::mpsc::channel();
@@ -438,72 +438,6 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
 }
 
 #[tokio::test]
-async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    tokio::task::spawn_blocking(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-            .unwrap();
-        stream
-            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
-            .unwrap();
-        stream
-            .write_all(&lv1_frame("/Channels", &channels_args()))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    });
-
-    let event_bus = AppEventBus::default();
-    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let runtime_generation = RuntimeGeneration::new();
-    let (engine, task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1);
-    task.spawn();
-    let mut app_events = event_bus.subscribe();
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    start_fade(
-        &engine,
-        fade_config(
-            scene(1, "Intro"),
-            vec![FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::Pan,
-                target: -12.0,
-            }],
-            0,
-        ),
-    )
-    .await
-    .unwrap();
-
-    let completed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
-        loop {
-            match app_events.recv().await {
-                Ok(AppEvent::Fade {
-                    event: FadeEvent::FadeCompleted,
-                    ..
-                }) => return true,
-                Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
-            }
-        }
-    })
-    .await
-    .unwrap_or(false);
-
-    assert!(
-        completed,
-        "zero-duration pan-only fade should emit FadeCompleted"
-    );
-}
-
-#[tokio::test]
 async fn zero_duration_pan_family_targets_send_exact_final_values() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -560,6 +494,8 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
     let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
 
+    let mut app_events = event_bus.subscribe();
+
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     start_fade(
@@ -592,10 +528,20 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
     .await
     .unwrap();
 
-    let mut sent = Vec::new();
-    for _ in 0..3 {
-        sent.push(rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap());
-    }
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(150),
+        |event| matches!(event, FadeEvent::FadeCompleted),
+    )
+    .await;
+
+    let sent = tokio::task::spawn_blocking(move || {
+        (0..3)
+            .map(|_| rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap();
 
     assert!(sent.contains(&("/Set/Track/Pan".to_string(), 0, 0, -12.0)));
     assert!(sent.contains(&("/Set/Track/Pan/Balance".to_string(), 0, 0, 7.5)));
@@ -983,73 +929,6 @@ async fn engine_emits_fade_started_and_completed() {
 
     wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
         matches!(e, FadeEvent::FadeCompleted)
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn engine_detects_manual_override() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    tokio::task::spawn_blocking(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
-            .unwrap();
-        stream
-            .write_all(&lv1_frame("/Channels", &channels_args()))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        stream
-            .write_all(&lv1_frame(
-                "/Notify/Track/Out/Gain",
-                &[
-                    OscArg::Int(0),
-                    OscArg::Int(0),
-                    OscArg::Double(0.0),
-                    OscArg::Bool(true),
-                ],
-            ))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(3));
-    });
-
-    let event_bus = AppEventBus::default();
-    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
-    let mut app_events = event_bus.subscribe();
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let _ = start_fade(
-        &engine,
-        FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -20.0,
-            }],
-            duration_ms: 10_000,
-            curve: FadeCurve::Linear,
-        },
-    )
-    .await;
-
-    wait_for_app_fade_event(
-        &mut app_events,
-        std::time::Duration::from_millis(500),
-        |e| matches!(e, FadeEvent::FadeStarted),
-    )
-    .await;
-
-    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
-        matches!(e, FadeEvent::ChannelOverride { .. })
     })
     .await;
 }

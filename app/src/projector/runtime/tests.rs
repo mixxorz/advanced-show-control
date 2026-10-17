@@ -27,6 +27,15 @@ impl ProjectorTest {
         events: AppEventBus,
         runtime_source: crate::lifecycle::RuntimeSnapshotSource,
     ) -> Self {
+        let event_rx = events.subscribe();
+        Self::with_event_receiver(events, runtime_source, event_rx)
+    }
+
+    fn with_event_receiver(
+        events: AppEventBus,
+        runtime_source: crate::lifecycle::RuntimeSnapshotSource,
+        event_rx: broadcast::Receiver<AppEvent>,
+    ) -> Self {
         let (sink, snapshots) = projection_channel();
         let (logs, log_rx) = broadcast::channel(8);
         let task = spawn_projector(ProjectorInputs {
@@ -34,7 +43,7 @@ impl ProjectorTest {
             generation: 0,
             state: events.state(),
             runtime_source,
-            events: events.subscribe(),
+            events: event_rx,
             logs: log_rx,
         });
         Self {
@@ -336,35 +345,225 @@ fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
     );
 }
 
-#[tokio::test]
-async fn recovery_queue_overflow_establishes_a_new_cutoff() {
-    let runtime_source = crate::lifecycle::AppLifecycle::default().runtime_snapshot_source();
-    let mut pending = start_projector_recovery(runtime_source);
-    for sequence in 0..=MAX_PENDING_RECOVERY_EVENTS as u64 {
-        pending.push_event(AppEvent::Lv1 {
-            generation: 0,
-            event: Lv1Event::PingReceived { sequence },
-        });
+fn recovery_snapshot(name: &str) -> crate::lv1::Lv1StateSnapshot {
+    crate::lv1::Lv1StateSnapshot {
+        connection: ConnectionStatus::Connected,
+        scene: Some(crate::lv1::SceneState {
+            index: 1,
+            name: name.into(),
+        }),
+        scene_list: Some(vec![crate::lv1::SceneListEntry {
+            index: 1,
+            name: name.into(),
+        }]),
+        channels: vec![],
+        ping_sequence: 0,
     }
+}
 
-    assert!(pending.restart_required);
-    assert_eq!(pending.queued_events.len(), 1);
+async fn next_recovery_reply(
+    commands: &mut tokio::sync::mpsc::Receiver<Lv1Command>,
+) -> tokio::sync::oneshot::Sender<crate::lv1::Lv1StateSnapshot> {
+    let command = tokio::time::timeout(Duration::from_secs(1), commands.recv())
+        .await
+        .expect("projector should request authoritative LV1 state");
+    let Some(Lv1Command::GetState { reply }) = command else {
+        panic!("recovery should request an LV1 snapshot");
+    };
+    reply
+}
+
+async fn drain_projector_input(facts: &broadcast::Sender<AppEvent>) {
+    // This transport has exactly one receiver, owned by the running projector. Waiting for its
+    // public channel to drain prevents the next batch from introducing another broadcast lag.
+    let started = std::time::Instant::now();
+    while !facts.is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "projector should consume its input while recovery is pending"
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 #[tokio::test(start_paused = true)]
-async fn recovery_timeout_returns_disconnected_fallback() {
-    let (lv1, _commands) = tokio::sync::mpsc::channel(1);
+async fn recovery_queue_capacity_replays_facts_and_overflow_requeries_at_a_new_cutoff() {
+    for overflow in [false, true] {
+        let (lv1, mut commands) = tokio::sync::mpsc::channel(1);
+        let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
+            crate::lv1::test_actor_handle(lv1),
+        );
+        let (facts, event_rx) = broadcast::channel(64);
+        let mut test =
+            ProjectorTest::with_event_receiver(AppEventBus::default(), runtime_source, event_rx);
+        test.snapshot().await;
+        // Deliberately lag once to start recovery, before sending the controlled batches below.
+        for sequence in 0..65 {
+            facts
+                .send(AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::PingReceived { sequence },
+                })
+                .unwrap();
+        }
+        let old_reply = next_recovery_reply(&mut commands).await;
+
+        for sequence in 0..MAX_PENDING_RECOVERY_EVENTS {
+            let event = match sequence {
+                0 => AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::SceneListChanged(vec![crate::lv1::SceneListEntry {
+                        index: 2,
+                        name: "Before cutoff".into(),
+                    }]),
+                },
+                1 => AppEvent::Fade {
+                    generation: 0,
+                    event: crate::fade::FadeEvent::FadeStarted,
+                },
+                _ => AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::PingReceived {
+                        sequence: sequence as u64,
+                    },
+                },
+            };
+            facts.send(event).unwrap();
+            if (sequence + 1) % 64 == 0 {
+                drain_projector_input(&facts).await;
+            }
+        }
+        drain_projector_input(&facts).await;
+        if overflow {
+            facts
+                .send(AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::SceneChanged(crate::lv1::SceneObservation {
+                        sequence: 1,
+                        scene: crate::lv1::SceneState {
+                            index: 3,
+                            name: "After cutoff".into(),
+                        },
+                    }),
+                })
+                .unwrap();
+            drain_projector_input(&facts).await;
+        }
+
+        old_reply
+            .send(recovery_snapshot("Initial recovery"))
+            .unwrap();
+        if overflow {
+            let reply = next_recovery_reply(&mut commands).await;
+            let pending_snapshot = test.snapshot().await;
+            assert_eq!(
+                pending_snapshot.connection,
+                crate::projector::AppConnectionState::Disconnected
+            );
+            assert!(pending_snapshot.current_scene.is_none());
+            assert_eq!(
+                pending_snapshot.fade_state,
+                crate::projector::AppFadeState::Idle
+            );
+            reply.send(recovery_snapshot("Fresh recovery")).unwrap();
+        }
+
+        let snapshot = test.snapshot().await;
+        assert_eq!(
+            snapshot.connection,
+            crate::projector::AppConnectionState::Connected
+        );
+        if overflow {
+            assert_eq!(snapshot.current_scene.unwrap().name, "After cutoff");
+            assert_eq!(snapshot.scenes[0].name, "Fresh recovery");
+            assert_eq!(snapshot.fade_state, crate::projector::AppFadeState::Idle);
+        } else {
+            assert_eq!(snapshot.current_scene.unwrap().name, "Initial recovery");
+            assert_eq!(snapshot.scenes[0].name, "Before cutoff");
+            assert_eq!(snapshot.fade_state, crate::projector::AppFadeState::Running);
+        }
+        assert!(matches!(
+            commands.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_timeout_projects_disconnected_idle_and_preserves_app_state_and_logs() {
+    let (lv1, mut commands) = tokio::sync::mpsc::channel(1);
     let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
         crate::lv1::test_actor_handle(lv1),
     );
-    let recovery = tokio::spawn(recover_projector_after_lag(runtime_source));
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_millis(501)).await;
+    let events = AppEventBus::new(1);
+    events.publish(show_event(true));
+    events.publish(AppEvent::CueLists(cue_state()));
+    let mut test = ProjectorTest::with_runtime_source(events, runtime_source);
+    test.snapshot().await;
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.snapshot().await;
+    test.events
+        .publish_fade(0, crate::fade::FadeEvent::FadeStarted);
+    test.logs
+        .send(UiLogEvent {
+            severity: LogSeverity::Info,
+            message: "before recovery".into(),
+        })
+        .unwrap();
+    let before = test.snapshot().await;
+    assert_eq!(
+        before.connection,
+        crate::projector::AppConnectionState::Connected
+    );
+    assert_eq!(before.fade_state, crate::projector::AppFadeState::Running);
 
-    let result = recovery.await.unwrap();
-    assert!(result.timed_out);
-    assert_eq!(result.generation, Some(0));
-    assert!(result.snapshot.is_none());
+    for sequence in 0..2 {
+        test.events
+            .publish_lv1(0, Lv1Event::PingReceived { sequence });
+    }
+    let mut reply = next_recovery_reply(&mut commands).await;
+    let AppEvent::Show(mut show) = show_event(true) else {
+        unreachable!()
+    };
+    show.show_file_name = "Recovery session".into();
+    test.events.publish(AppEvent::Show(show));
+    test.logs
+        .send(UiLogEvent {
+            severity: LogSeverity::Warning,
+            message: "during recovery".into(),
+        })
+        .unwrap();
+    let pending = test.snapshot().await;
+    assert_eq!(pending.show_file_name, "Recovery session");
+    assert!(
+        !reply.is_closed(),
+        "request should still be pending before its deadline"
+    );
+
+    tokio::time::advance(Duration::from_millis(501)).await;
+    tokio::time::timeout(Duration::from_secs(1), reply.closed())
+        .await
+        .expect("timed-out recovery should discard its pending reply");
+    let snapshot = test.snapshot().await;
+    assert!(snapshot.state_version > pending.state_version);
+    assert_eq!(
+        snapshot.connection,
+        crate::projector::AppConnectionState::Disconnected
+    );
+    assert_eq!(snapshot.fade_state, crate::projector::AppFadeState::Idle);
+    assert!(snapshot.current_scene.is_none());
+    assert!(snapshot.lockout);
+    assert_eq!(snapshot.show_file_name, "Recovery session");
+    assert_eq!(snapshot.cue_lists[0].name, "Main");
+    assert_eq!(
+        snapshot
+            .logs
+            .iter()
+            .map(|log| log.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["before recovery", "during recovery"]
+    );
+    assert!(reply.send(recovery_snapshot("Too late")).is_err());
 }
 
 #[tokio::test]

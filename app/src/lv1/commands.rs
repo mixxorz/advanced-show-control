@@ -14,24 +14,6 @@ pub enum Lv1Command {
         gain_db: f64,
         reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
-    SetPan {
-        group: i32,
-        channel: i32,
-        value: f64,
-        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
-    },
-    SetBalance {
-        group: i32,
-        channel: i32,
-        value: f64,
-        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
-    },
-    SetWidth {
-        group: i32,
-        channel: i32,
-        value: f64,
-        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
-    },
     SetMute {
         group: i32,
         channel: i32,

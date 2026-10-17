@@ -205,22 +205,60 @@ mod tests {
     }
 
     #[test]
-    fn serializes_log_entry_representation() {
-        let entry = ProbeLogEntry {
-            timestamp_ms: 12,
-            direction: "received".to_string(),
-            kind: MessageKind::Keepalive,
-            address: Some("/ping".to_string()),
-            args: vec![],
-            frame_size: Some(8),
-            header_hex: Some("0000000000000008".to_string()),
-            error: None,
-        };
+    fn logger_writes_newline_terminated_json_and_flushes_before_returning() {
+        let path = std::env::temp_dir().join(format!("lv1-probe-{}.jsonl", uuid::Uuid::new_v4()));
+        let started = std::time::Instant::now();
+        let mut logger = JsonlLogger::create(&path).unwrap();
+        logger
+            .write(ProbeLogEntry {
+                timestamp_ms: u128::MAX,
+                direction: "received".to_string(),
+                kind: MessageKind::Keepalive,
+                address: Some("/ping".to_string()),
+                args: vec![],
+                frame_size: Some(8),
+                header_hex: Some("0000000000000008".to_string()),
+                error: None,
+            })
+            .unwrap();
 
+        // Read before closing the logger so BufWriter's drop cannot hide a missing flush.
+        let first_write = std::fs::read_to_string(&path).unwrap();
+        assert!(first_write.ends_with('\n'));
+        assert_eq!(first_write.lines().count(), 1);
+        let first: serde_json::Value = serde_json::from_str(&first_write).unwrap();
+        let timestamp_ms = first["timestamp_ms"].as_u64().unwrap();
+        assert!(u128::from(timestamp_ms) <= started.elapsed().as_millis());
         assert_eq!(
-            serde_json::to_string(&entry).unwrap(),
-            r#"{"timestamp_ms":12,"direction":"received","kind":"Keepalive","address":"/ping","args":[],"frame_size":8,"header_hex":"0000000000000008","error":null}"#
+            first,
+            serde_json::json!({
+                "timestamp_ms": timestamp_ms,
+                "direction": "received",
+                "kind": "Keepalive",
+                "address": "/ping",
+                "args": [],
+                "frame_size": 8,
+                "header_hex": "0000000000000008",
+                "error": null,
+            })
         );
+
+        logger
+            .write(entry_for_message("sent", &msg("/pong"), None, None))
+            .unwrap();
+        let second_write = std::fs::read_to_string(&path).unwrap();
+        assert!(second_write.starts_with(&first_write));
+        assert!(second_write.ends_with('\n'));
+        let entries: Vec<serde_json::Value> = second_write
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], first);
+        assert_eq!(entries[1]["direction"], "sent");
+        assert_eq!(entries[1]["address"], "/pong");
+        drop(logger);
+        std::fs::remove_file(path).unwrap();
     }
 
     fn msg(address: &str) -> OscMessage {

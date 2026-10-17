@@ -1275,10 +1275,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DIRTY_SESSION_PROMPT_CHOICES, about_detail, cue_completion_matches_session,
-        dirty_session_prompt_title, ensure_show_file_extension, is_show_file_path,
-        modal_surface_active, session_query_is_stale, suggested_save_file_name,
-        update_edit_epoch_is_stale,
+        DIRTY_SESSION_PROMPT_CHOICES, cue_completion_matches_session, dirty_session_prompt_title,
+        ensure_show_file_extension, is_show_file_path, modal_surface_active,
+        session_query_is_stale, suggested_save_file_name, update_edit_epoch_is_stale,
     };
     use crate::projector::AppViewState;
 
@@ -1373,22 +1372,5 @@ mod tests {
         assert!(!update_edit_epoch_is_stale(Some(7), 7));
         assert!(update_edit_epoch_is_stale(Some(7), 8));
         assert!(!update_edit_epoch_is_stale(None, 8)); // Explicit Discard is unconditional.
-    }
-
-    #[test]
-    fn about_detail_identifies_the_project_and_license() {
-        assert_eq!(
-            about_detail(),
-            concat!(
-                "Release ",
-                env!("ASC_RELEASE_ID"),
-                " (",
-                env!("ASC_RELEASE_VERSION"),
-                ")",
-                "\n\nGPUI Kit desktop control for Waves eMotion LV1 scene fades.",
-                "\n\nGPL-3.0-or-later",
-                "\nhttps://mitchel.me/advanced-show-control/"
-            )
-        );
     }
 }

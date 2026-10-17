@@ -181,21 +181,39 @@ async fn channel_change_rejects_pending_check_and_discards_late_completion() {
     let (reply, response) = oneshot::channel();
     handle.send(UpdatesCommand::Check { reply }).await.unwrap();
     let stale = request(&mut requests).await;
+    let mut events = bus.subscribe();
     settings(&bus, false, true);
     assert!(response.await.unwrap().is_err());
+    status(&bus, UpdateStatus::Idle).await;
+    // Queue a fresh automatic check without changing channels again. Its backend request
+    // cannot start until the owner has consumed the stale completion.
+    settings(&bus, true, true);
     stale
         .reply
         .send(Err(BackendError::Failed("stale network failure".into())))
         .ok()
         .unwrap();
-    status(&bus, UpdateStatus::Idle).await;
-    assert_eq!(bus.state().borrow().updates.error, None);
+    let fresh = request(&mut requests).await;
+    assert!(fresh.nightly);
+    assert!(fresh.network);
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::Updates(state) = event {
+            assert!(matches!(
+                state.status,
+                UpdateStatus::Idle | UpdateStatus::Checking
+            ));
+            assert_eq!(state.error, None);
+            assert_eq!(state.available_version, None);
+        }
+    }
     let (reply, response) = oneshot::channel();
     handle
         .send(UpdatesCommand::PrepareInstall { reply })
         .await
         .unwrap();
     assert!(response.await.unwrap().is_err());
+    fresh.reply.send(Ok(checked(None))).ok().unwrap();
+    status(&bus, UpdateStatus::UpToDate).await;
 }
 
 #[tokio::test]
@@ -223,9 +241,27 @@ async fn channel_change_discards_download_and_staged_install_intent() {
         .await
         .unwrap();
     let download = download_requests.recv().await.unwrap();
+    let mut events = bus.subscribe();
     settings(&bus, false, true);
     assert!(response.await.unwrap().is_err());
+    status(&bus, UpdateStatus::Idle).await;
+    settings(&bus, true, true);
     download.send(()).unwrap();
+    // A replacement backend request proves the download completion was consumed;
+    // invalidation's earlier Idle publication alone would not establish this.
+    let fresh = request(&mut requests).await;
+    assert!(fresh.nightly);
+    assert!(fresh.network);
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::Updates(state) = event {
+            assert!(matches!(
+                state.status,
+                UpdateStatus::Idle | UpdateStatus::Checking
+            ));
+            assert_eq!(state.error, None);
+            assert_eq!(state.available_version, None);
+        }
+    }
     let (reply, response) = oneshot::channel();
     handle
         .send(UpdatesCommand::PrepareInstall { reply })
@@ -233,7 +269,8 @@ async fn channel_change_discards_download_and_staged_install_intent() {
         .unwrap();
     assert!(response.await.unwrap().is_err());
     assert_eq!(launches.load(Ordering::SeqCst), 0);
-    status(&bus, UpdateStatus::Idle).await;
+    fresh.reply.send(Ok(checked(None))).ok().unwrap();
+    status(&bus, UpdateStatus::UpToDate).await;
 }
 
 #[tokio::test]

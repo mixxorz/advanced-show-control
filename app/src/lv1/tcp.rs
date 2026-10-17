@@ -371,24 +371,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_lv1_frame_header_before_waiting_for_payload() {
+    fn rejects_invalid_lv1_frame_header_with_or_without_payload() {
+        let invalid_header = [0, 0, 0, 3, 0, 0, 0, 0];
         let mut prefix = Vec::new();
         prefix.extend_from_slice(&1024_u32.to_be_bytes());
-        prefix.extend_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
+        prefix.extend_from_slice(&invalid_header);
+        let mut complete_frame = encode_frame("/ping", &[]).unwrap();
+        complete_frame[4..12].copy_from_slice(&invalid_header);
 
-        let error = FrameDecoder::default().push(&prefix).unwrap_err();
-
-        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
-    }
-
-    #[test]
-    fn rejects_invalid_lv1_frame_header() {
-        let mut bytes = encode_frame("/ping", &[]).unwrap();
-        bytes[4..12].copy_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
-
-        let error = FrameDecoder::default().push(&bytes).unwrap_err();
-
-        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
+        for (case, bytes) in [
+            ("prefix only", prefix),
+            ("complete payload", complete_frame),
+        ] {
+            let error = FrameDecoder::default().push(&bytes).unwrap_err();
+            assert!(
+                matches!(error, Lv1TcpError::InvalidHeader(header) if header == invalid_header),
+                "{case} must reject the header without waiting for more bytes"
+            );
+        }
     }
 
     #[test]

@@ -777,11 +777,7 @@ impl ScenesView {
             .iter()
             .map(|channel| (channel.group, channel.channel))
             .collect();
-        let all_scoped = scene
-            .channel_configs
-            .iter()
-            .all(|channel| scoped.contains(&(channel.group, channel.channel)));
-        let none_scoped = scoped.is_empty();
+        let (all_scoped, none_scoped) = aggregate_scope(&scene.channel_configs, &scoped);
         let groups = grouped_channels(&scene.channel_configs);
         let faders = scene.scope_toggles.faders;
         let pan = scene.scope_toggles.pan;
@@ -1128,6 +1124,15 @@ fn channel_group(group: i32) -> &'static str {
     }
 }
 
+fn aggregate_scope(channels: &[ChannelConfig], scoped: &BTreeSet<(i32, i32)>) -> (bool, bool) {
+    (
+        channels
+            .iter()
+            .all(|channel| scoped.contains(&(channel.group, channel.channel))),
+        scoped.is_empty(),
+    )
+}
+
 fn grouped_channels(channels: &[ChannelConfig]) -> Vec<(&'static str, Vec<&ChannelConfig>)> {
     let mut sorted: Vec<_> = channels.iter().collect();
     sorted.sort_by_key(|channel| (channel.group, channel.channel));
@@ -1189,7 +1194,7 @@ fn channel_tooltip(channel: &ChannelConfig, snapshot: &AppViewState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenes::{ChannelRef, SceneScopeToggles};
+    use crate::scenes::SceneScopeToggles;
 
     fn scene(id: Uuid, index: Option<i32>, name: &str) -> SceneConfig {
         SceneConfig {
@@ -1328,54 +1333,19 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_scope_ignores_duplicate_and_extraneous_pairs() {
-        let configs = [
-            ChannelConfig {
-                group: 0,
-                channel: 0,
-                fader_db: None,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-            ChannelConfig {
-                group: 0,
-                channel: 1,
-                fader_db: None,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-        ];
-        let scoped = [
-            ChannelRef {
-                group: 0,
-                channel: 0,
-            },
-            ChannelRef {
-                group: 0,
-                channel: 0,
-            },
-            ChannelRef {
-                group: 0,
-                channel: 1,
-            },
-            ChannelRef {
-                group: 9,
-                channel: 9,
-            },
-        ];
-        let pairs: BTreeSet<_> = scoped
-            .iter()
-            .map(|item| (item.group, item.channel))
-            .collect();
-        assert!(
-            configs
-                .iter()
-                .all(|config| pairs.contains(&(config.group, config.channel)))
-        );
-        assert!(!pairs.is_empty());
+    fn aggregate_scope_distinguishes_all_partial_and_none_with_duplicate_and_extraneous_pairs() {
+        let configs = [channel_config(0, 0), channel_config(0, 1)];
+        for (pairs, expected) in [
+            (vec![(0, 0), (0, 0), (0, 1), (9, 9)], (true, false)),
+            (vec![(0, 0), (0, 0), (9, 9)], (false, false)),
+            (vec![(9, 9)], (false, false)),
+            (vec![], (false, true)),
+        ] {
+            assert_eq!(
+                aggregate_scope(&configs, &pairs.into_iter().collect()),
+                expected
+            );
+        }
+        assert_eq!(aggregate_scope(&[], &BTreeSet::new()), (true, true));
     }
 }
