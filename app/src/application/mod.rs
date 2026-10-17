@@ -676,14 +676,6 @@ fn enqueue_cued_cue_recall(cue_lists: &CueListsHandle) -> Result<PendingCueRecal
     Ok(response)
 }
 
-pub(crate) async fn complete_cued_cue_recall(
-    response: PendingCueRecall,
-) -> Result<CueRecallResult, String> {
-    complete_cued_cue_recall_typed(response)
-        .await
-        .map_err(map_app_command_error)
-}
-
 pub(crate) async fn complete_cued_cue_recall_typed(
     response: PendingCueRecall,
 ) -> Result<CueRecallResult, AppCommandError> {
@@ -821,14 +813,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            complete_cued_cue_recall(first_response)
+            complete_cued_cue_recall_typed(first_response)
                 .await
                 .unwrap()
                 .recalled_entry_id,
             first_id
         );
         assert_eq!(
-            complete_cued_cue_recall(second_response)
+            complete_cued_cue_recall_typed(second_response)
                 .await
                 .unwrap()
                 .recalled_entry_id,
