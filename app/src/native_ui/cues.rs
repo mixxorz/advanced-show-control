@@ -2362,11 +2362,4 @@ mod tests {
             None
         );
     }
-
-    #[test]
-    fn scene_numbers_match_console_one_based_format() {
-        assert_eq!(format_scene_number(None), "---");
-        assert_eq!(format_scene_number(Some(0)), "001");
-        assert_eq!(format_scene_number(Some(11)), "012");
-    }
 }

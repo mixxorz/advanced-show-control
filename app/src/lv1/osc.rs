@@ -224,17 +224,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_and_decodes_numeric_and_string_args() {
-        let msg = OscMessage {
-            address: "/Set/Track/Out/Gain".to_string(),
-            args: vec![OscArg::Int(0), OscArg::Int(1), OscArg::Double(-12.5)],
-        };
-
-        let bytes = encode_message(&msg.address, &msg.args).unwrap();
-        assert_eq!(decode_packet(&bytes).unwrap(), msg);
-    }
-
-    #[test]
     fn encodes_and_decodes_all_phase_1_types() {
         let msg = OscMessage {
             address: "/types".to_string(),
@@ -265,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn pads_strings_and_blobs_to_four_byte_boundaries() {
+    fn pads_strings_and_blobs_with_zeroes_to_four_byte_boundaries() {
         let bytes = encode_message(
             "/pad",
             &[
@@ -276,6 +265,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(bytes.len() % 4, 0);
+        assert_eq!(bytes, b"/pad\0\0\0\0,sb\0abc\0\0\0\0\x03\x01\x02\x03\0");
         assert_eq!(
             decode_packet(&bytes).unwrap(),
             OscMessage {
@@ -307,22 +297,6 @@ mod tests {
             encode_message("/s", &[OscArg::String("bad\0".to_string())]),
             Err(OscError::EmbeddedNul)
         );
-    }
-
-    #[test]
-    fn encoder_writes_zero_padding_for_strings_and_blobs() {
-        let bytes = encode_message(
-            "/pad",
-            &[
-                OscArg::String("abc".to_string()),
-                OscArg::Blob(vec![1, 2, 3]),
-            ],
-        )
-        .unwrap();
-        // address "/pad\0" + 3 zero pad bytes (positions 4-7)
-        assert_eq!(&bytes[4..8], &[0, 0, 0, 0]);
-        // the trailing byte is the single zero pad for the 3-byte blob
-        assert_eq!(*bytes.last().unwrap(), 0);
     }
 
     #[test]

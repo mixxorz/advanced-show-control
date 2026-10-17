@@ -133,13 +133,15 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = show_actor(event_bus);
 
+        let (reply, response) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::SetLockout {
             enabled: true,
-            reply: None,
+            reply: Some(reply),
         })
         .await
         .unwrap();
 
+        assert!(response.await.unwrap().changed);
         let event = events.recv().await.unwrap();
         match event {
             AppEvent::Show(state) => {
@@ -149,24 +151,6 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn set_lockout_publishes_show_event_when_changed() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let show = show_actor(event_bus);
-
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::SetLockout {
-            enabled: true,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-        assert!(rx.await.unwrap().changed);
-
-        recv_show_event(&mut events).await;
     }
 
     #[tokio::test]

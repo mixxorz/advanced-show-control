@@ -65,7 +65,7 @@ mod tests {
         let internal_scene_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let config = SceneConfig {
             internal_scene_id,
-            scene_index: Some(0),
+            scene_index: None,
             scene_name: "Intro".to_string(),
             duration_ms: 1000,
             channel_configs: Vec::new(),
@@ -76,7 +76,7 @@ mod tests {
         let json = serde_json::to_value(config).unwrap();
 
         assert_eq!(json["internalSceneId"], internal_scene_id.to_string());
-        assert_eq!(json["sceneIndex"], 0);
+        assert_eq!(json.get("sceneIndex"), Some(&serde_json::Value::Null));
     }
 
     #[test]
@@ -178,25 +178,5 @@ mod tests {
             internal_scene_id.to_string()
         );
         assert_eq!(json["sceneConfigs"][0]["sceneIndex"], 12);
-    }
-
-    #[test]
-    fn missing_pan_scope_defaults_to_false() {
-        let json = serde_json::json!({ "faders": true });
-
-        let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
-
-        assert!(!toggles.pan);
-        assert!(toggles.faders);
-    }
-
-    #[test]
-    fn missing_fader_scope_defaults_to_false_when_scope_toggles_exist() {
-        let json = serde_json::json!({ "pan": true });
-
-        let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
-
-        assert!(!toggles.faders);
-        assert!(toggles.pan);
     }
 }

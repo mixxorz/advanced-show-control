@@ -754,11 +754,13 @@ mod tests {
     fn setting_already_active_list_preserves_cue_and_reports_unchanged() {
         let mut state = state_with_two_entries();
         let active = state.document().active_cue_list_id.unwrap();
-        let cued = state.document().cued_cue_entry_id;
+        let entry = state.add_scene_to_active_cue_list(id(20), 1).unwrap();
+        state.cue_entry(Some(entry.id)).unwrap();
+        assert_eq!(state.document().cued_cue_entry_id, Some(entry.id));
 
         let changed = state.set_active_cue_list(Some(active)).unwrap();
 
         assert!(!changed);
-        assert_eq!(state.document().cued_cue_entry_id, cued);
+        assert_eq!(state.document().cued_cue_entry_id, Some(entry.id));
     }
 }

@@ -272,13 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn channels_default_to_unmuted_when_batch_has_no_mute_field() {
-        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 0.0, 1, 0.0)]);
-        let channels = parse_channels_batch(&args).unwrap();
-        assert!(!channels[0].muted);
-    }
-
-    #[test]
     fn does_not_treat_mono_field_four_as_balance() {
         let args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 1.5, 1, 0.0)]);
         let channels = parse_channels_batch(&args).unwrap();

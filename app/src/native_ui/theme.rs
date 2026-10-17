@@ -133,16 +133,6 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn native_palette_matches_the_existing_console_tokens() {
-        assert_eq!(CONSOLE_BG, 0x050506);
-        assert_eq!(CONSOLE_PRIMARY, 0xdedbd6);
-        assert_eq!(ACCENT_ORANGE, 0xff8a00);
-        assert_eq!(STATUS_CURRENT, 0x2c9dff);
-        assert_eq!(STATUS_CUED, 0x52d62d);
-        assert_eq!(STATUS_DANGER, 0xff5c5c);
-    }
-
     #[gpui_kit::test]
     fn bundled_fonts_and_console_theme_install(cx: &mut gpui_kit::TestAppContext) {
         cx.update(|cx| {

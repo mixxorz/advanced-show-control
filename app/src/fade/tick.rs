@@ -152,13 +152,6 @@ impl ActiveTarget {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
-        let new_value = self.proposed_send(now)?;
-        self.expected_value = new_value;
-        Some(new_value)
-    }
-
     /// @cc [owner:mixxorz,label:product;safety] parameter-send-proposal
     /// `proposed_send` MUST suppress values whose change from `expected_value` is below the
     /// parameter's minimum delta, comparing faders in measured position space and Pan, Balance, and
@@ -184,15 +177,6 @@ impl ActiveTarget {
             FadeParameter::Width => MIN_SEND_DELTA_WIDTH,
         };
         (new_value - self.expected_value).abs() >= delta_threshold
-    }
-
-    /// @cc [owner:mixxorz,label:product;safety] exact-final-value
-    /// `exact_final_send` MUST bypass minimum-delta suppression, return the configured target
-    /// exactly, and update the expected value used by feedback comparison to that same target.
-    #[cfg(test)]
-    pub(crate) fn exact_final_send(&mut self) -> f64 {
-        self.expected_value = self.target_value;
-        self.target_value
     }
 }
 
@@ -293,7 +277,7 @@ mod tests {
         target.finish_on_next_tick();
 
         assert!(target.is_done(Instant::now()));
-        assert_eq!(target.exact_final_send(), -10.0);
+        assert_eq!(target.proposed_send(target.started_at), Some(-10.0));
         assert_eq!(target.scene, owner);
         assert_eq!(target.key, key);
     }
@@ -308,7 +292,10 @@ mod tests {
         target.resume(now + Duration::from_secs(2));
 
         assert!(target.is_done(now + Duration::from_secs(2)));
-        assert_eq!(target.exact_final_send(), -10.0);
+        assert_eq!(
+            target.proposed_send(now + Duration::from_secs(2)),
+            Some(-10.0)
+        );
     }
 
     #[test]
@@ -346,37 +333,69 @@ mod tests {
     }
 
     #[test]
-    fn next_send_returns_none_when_below_min_delta() {
-        let mut ch = make_channel(-20.0, -10.0, 4000);
-        // At t=0, value is -20.0 = expected_db, delta is 0 — no send
-        let now = ch.started_at;
-        assert!(ch.next_send(now).is_none());
+    fn proposed_send_compares_faders_in_position_space_without_committing() {
+        use crate::fade::fader_law::pos_to_db;
+
+        for start_db in [-100.0, -20.0] {
+            for direction in [-1.0, 1.0] {
+                for (delta, should_send) in [(0.0019, false), (0.0021, true)] {
+                    let target_db = pos_to_db(db_to_pos(start_db) + direction * delta);
+                    let target = make_channel(start_db, target_db, 4_000);
+                    assert_eq!(target.proposed_send(target.started_at), None);
+                    for elapsed_ms in [4_000, 5_000] {
+                        assert_eq!(
+                            target.proposed_send(
+                                target.started_at + Duration::from_millis(elapsed_ms)
+                            ),
+                            should_send.then_some(target_db),
+                            "start={start_db}, direction={direction}, position delta={delta}"
+                        );
+                        assert_eq!(target.expected_value, start_db);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn next_send_returns_some_when_above_min_delta() {
-        let mut ch = make_channel(-20.0, -10.0, 4000);
-        // At t=1.0 (end), value is -10.0; position delta from -20→-10 is well above MIN_SEND_DELTA_POS
-        let end = ch.started_at + Duration::from_millis(4000);
-        let result = ch.next_send(end);
-        assert!(result.is_some());
-        assert!((result.unwrap() - -10.0).abs() < 1e-10);
+    fn proposed_send_uses_each_pan_family_native_threshold_without_committing() {
+        for (parameter, below, boundary, above) in [
+            (FadeParameter::Pan, 0.899, 0.9, 0.901),
+            (FadeParameter::Balance, 0.899, 0.9, 0.901),
+            (FadeParameter::Width, 0.0279, 0.028, 0.0281),
+        ] {
+            for direction in [-1.0, 1.0] {
+                for (delta, should_send) in [(below, false), (boundary, true), (above, true)] {
+                    let mut target = make_pan_family_target(parameter);
+                    target.target_value = direction * delta;
+                    assert_eq!(target.proposed_send(target.started_at), None);
+                    assert_eq!(
+                        target.proposed_send(target.started_at + target.duration),
+                        should_send.then_some(target.target_value),
+                        "{parameter:?}, direction={direction}, native delta={delta}"
+                    );
+                    assert_eq!(target.expected_value, 0.0);
+                }
+            }
+        }
     }
 
     #[test]
-    fn next_send_updates_expected_db() {
-        let mut ch = make_channel(-20.0, -10.0, 4000);
-        let end = ch.started_at + Duration::from_millis(4000);
-        ch.next_send(end);
-        assert!((ch.expected_value - -10.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn next_send_at_done_returns_exact_target() {
-        let mut ch = make_channel(-20.0, -10.0, 4000);
-        let end = ch.started_at + Duration::from_millis(5000);
-        let result = ch.next_send(end).unwrap();
-        assert!((result - -10.0).abs() < 1e-10);
+    fn proposed_send_returns_intermediate_values_without_committing() {
+        for (parameter, start, target, midpoint) in [
+            (FadeParameter::FaderDb, -20.0, -10.0, -15.0),
+            (FadeParameter::Pan, 0.0, 10.0, 5.0),
+            (FadeParameter::Balance, 0.0, 10.0, 5.0),
+            (FadeParameter::Width, 0.0, 1.0, 0.5),
+        ] {
+            let mut active = make_channel(start, target, 4_000);
+            active.key.parameter = parameter;
+            let proposed = active
+                .proposed_send(active.started_at + Duration::from_millis(2_000))
+                .expect("intermediate change should exceed the parameter threshold");
+            assert!((proposed - midpoint).abs() < 1e-10, "{parameter:?}");
+            assert_eq!(active.expected_value, start);
+        }
     }
 
     fn make_pan_family_target(parameter: FadeParameter) -> ActiveTarget {
@@ -393,15 +412,6 @@ mod tests {
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
         })
-    }
-
-    #[test]
-    fn next_send_pan_respects_minimum_send_delta() {
-        let mut target = make_pan_family_target(FadeParameter::Pan);
-        assert!(target.next_send(target.started_at).is_none());
-
-        let later = target.started_at + Duration::from_millis(400);
-        assert!(target.next_send(later).is_some());
     }
 
     #[test]
@@ -443,24 +453,6 @@ mod tests {
 
         assert!(target.record_override_report(reported_db));
         assert_eq!(target.override_deviation_count, 0);
-    }
-
-    #[test]
-    fn next_send_balance_respects_minimum_send_delta() {
-        let mut target = make_pan_family_target(FadeParameter::Balance);
-        assert!(target.next_send(target.started_at).is_none());
-
-        let later = target.started_at + Duration::from_millis(400);
-        assert!(target.next_send(later).is_some());
-    }
-
-    #[test]
-    fn next_send_width_respects_minimum_send_delta() {
-        let mut target = make_pan_family_target(FadeParameter::Width);
-        assert!(target.next_send(target.started_at).is_none());
-
-        let later = target.started_at + Duration::from_millis(200);
-        assert!(target.next_send(later).is_some());
     }
 
     #[test]

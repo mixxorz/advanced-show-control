@@ -295,6 +295,22 @@ impl AppLifecycle {
         Ok(())
     }
 
+    #[cfg(all(test, feature = "debug-tools"))]
+    pub(crate) async fn install_lv1_for_test(&self, lv1: Lv1ActorHandle) {
+        let generation = self.active_generation().await;
+        let (fade, _commands) = tokio::sync::mpsc::channel(1);
+        assert!(
+            self.install_runtime_transaction(InstalledRuntime {
+                generation,
+                lv1,
+                fade,
+            })
+            .await
+            .is_ok(),
+            "test endpoint should install through the current-generation transaction"
+        );
+    }
+
     #[cfg(test)]
     async fn install_accepted_scene_recall_fader(
         &self,
@@ -1360,27 +1376,65 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn frontend_ready_starts_one_projector_and_returns_latest_snapshot_subscriptions() {
-        let fixture = lifecycle_for_test(AppEventBus::default());
-        let (_first_logs, first_log_rx) = tokio::sync::broadcast::channel(1);
-        let (_second_logs, second_log_rx) = tokio::sync::broadcast::channel(1);
+    #[tokio::test(start_paused = true)]
+    async fn frontend_ready_starts_one_projector_and_preserves_its_first_log_source() {
+        async fn next_snapshot(
+            subscription: &mut crate::projector::ProjectionSubscription,
+        ) -> crate::projector::AppViewState {
+            tokio::time::timeout(std::time::Duration::from_secs(1), subscription.changed())
+                .await
+                .expect("subscription should receive a snapshot")
+                .expect("projector should remain available");
+            subscription.latest().unwrap()
+        }
 
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let (first_logs, first_log_rx) = tokio::sync::broadcast::channel(8);
+        let (second_logs, second_log_rx) = tokio::sync::broadcast::channel(8);
+        // Keep a separate observer so publishing to an ignored source still succeeds.
+        let _second_log_observer = second_logs.subscribe();
         let mut first = fixture.frontend_ready(first_log_rx).await.unwrap();
         let mut second = fixture.frontend_ready(second_log_rx).await.unwrap();
+        next_snapshot(&mut first).await;
+        next_snapshot(&mut second).await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), first.changed())
-            .await
-            .expect("first subscription should receive the initial snapshot")
-            .expect("projector should remain available");
-        tokio::time::timeout(std::time::Duration::from_secs(1), second.changed())
-            .await
-            .expect("second subscription should receive the initial snapshot")
-            .expect("projector should remain available");
-        let first_snapshot = first.latest().unwrap();
-        let second_snapshot = second.latest().unwrap();
-        assert_eq!(first_snapshot.state_version, second_snapshot.state_version);
+        second_logs
+            .send(UiLogEvent {
+                severity: crate::projector::LogSeverity::Warning,
+                message: "replacement source must be ignored".into(),
+            })
+            .unwrap();
+        first_logs
+            .send(UiLogEvent {
+                severity: crate::projector::LogSeverity::Info,
+                message: "first source after repeated readiness".into(),
+            })
+            .unwrap();
+        let first_snapshot = next_snapshot(&mut first).await;
+        let second_snapshot = next_snapshot(&mut second).await;
         assert_eq!(first_snapshot, second_snapshot);
+        assert_eq!(first_snapshot.logs.len(), 1);
+        assert_eq!(
+            first_snapshot.logs[0].message,
+            "first source after repeated readiness"
+        );
+
+        let (_third_logs, third_log_rx) = tokio::sync::broadcast::channel(1);
+        let mut third = fixture.frontend_ready(third_log_rx).await.unwrap();
+        assert_eq!(third.latest().unwrap(), first_snapshot);
+        first_logs
+            .send(UiLogEvent {
+                severity: crate::projector::LogSeverity::Info,
+                message: "original source remains live".into(),
+            })
+            .unwrap();
+        let updated = next_snapshot(&mut first).await;
+        assert!(updated.state_version > first_snapshot.state_version);
+        assert_eq!(updated.logs.len(), 2);
+        assert_eq!(updated.logs[0], first_snapshot.logs[0]);
+        assert_eq!(updated.logs[1].message, "original source remains live");
+        assert_eq!(next_snapshot(&mut second).await, updated);
+        assert_eq!(next_snapshot(&mut third).await, updated);
     }
 
     #[tokio::test]

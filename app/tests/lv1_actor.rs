@@ -357,11 +357,59 @@ async fn actor_resets_scene_observation_sequence_after_reconnecting() {
 }
 
 #[tokio::test]
+async fn actor_distinguishes_unknown_scene_list_from_authoritative_empty() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (send_scene_list, scene_list_requested) = oneshot::channel();
+    let (release_peer, peer_released) = oneshot::channel();
+    let server = tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        scene_list_requested.blocking_recv().unwrap();
+        stream
+            .write_all(&make_lv1_frame("/Notify/SceneList", &[OscArg::Int(0)]))
+            .unwrap();
+        let _ = peer_released.blocking_recv();
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 7);
+    wait_for_connected(&mut events).await;
+    let (reply, snapshot) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    let snapshot = snapshot.await.unwrap();
+    assert_eq!(snapshot.connection, ConnectionStatus::Connected);
+    assert_eq!(snapshot.scene_list, None);
+
+    send_scene_list.send(()).unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("actor did not publish the authoritative empty scene list")
+        .unwrap();
+    assert!(
+        matches!(
+            event,
+            AppEvent::Lv1 {
+                generation: 7,
+                event: Lv1Event::SceneListChanged(ref scenes),
+            } if scenes.is_empty()
+        ),
+        "unexpected scene-list fact: {event:?}"
+    );
+    let (reply, snapshot) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    assert_eq!(snapshot.await.unwrap().scene_list, Some(Vec::new()));
+    release_peer.send(()).unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn get_state_returns_snapshot_with_current_values() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (gain_updates_tx, gain_updates_rx) = std::sync::mpsc::channel();
 
-    tokio::task::spawn_blocking(move || {
+    let server = tokio::task::spawn_blocking(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
             .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
@@ -387,10 +435,6 @@ async fn get_state_returns_snapshot_with_current_values() {
                     OscArg::Int(4),
                     OscArg::String("Outro".to_string()),
                 ],
-            ),
-            (
-                "/Notify/Track/Out/Gain",
-                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Double(-6.0)],
             ),
             (
                 "/Notify/Track/Out/Mute",
@@ -421,7 +465,14 @@ async fn get_state_returns_snapshot_with_current_values() {
         ] {
             stream.write_all(&make_lv1_frame(address, &args)).unwrap();
         }
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        while let Ok(gain_arg) = gain_updates_rx.recv() {
+            stream
+                .write_all(&make_lv1_frame(
+                    "/Notify/Track/Out/Gain",
+                    &[OscArg::Int(0), OscArg::Int(0), gain_arg],
+                ))
+                .unwrap();
+        }
     });
 
     let event_bus = AppEventBus::default();
@@ -458,19 +509,48 @@ async fn get_state_returns_snapshot_with_current_values() {
     assert_eq!(snapshot.scene_list.as_ref().unwrap().len(), 1);
     assert_eq!(snapshot.channels.len(), 1);
     let channel = &snapshot.channels[0];
-    assert_eq!((channel.gain_db, channel.muted), (-6.0, true));
+    assert_eq!((channel.gain_db, channel.muted), (-8.0, true));
     assert_eq!(
         (channel.pan, channel.balance, channel.width),
         (Some(-15.0), Some(0.25), Some(1.2))
     );
+
+    for (gain_arg, expected) in [
+        (OscArg::Float(-6.25), -6.25),
+        (OscArg::Double(-7.5), -7.5),
+        (OscArg::Int(-6), -6.0),
+    ] {
+        gain_updates_tx.send(gain_arg).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("actor did not publish the gain update")
+            .unwrap();
+        assert!(
+            matches!(
+                event,
+                AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::FaderChanged { group: 0, channel: 0, gain_db },
+                } if gain_db == expected
+            ),
+            "unexpected normalized gain fact: {event:?}"
+        );
+
+        let (reply, snapshot) = oneshot::channel();
+        handle.send(Lv1Command::GetState { reply }).await.unwrap();
+        assert_eq!(snapshot.await.unwrap().channels[0].gain_db, expected);
+    }
+    drop(gain_updates_tx);
+    server.await.unwrap();
 }
 
 #[tokio::test]
 async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (release_peer, peer_released) = oneshot::channel();
 
-    tokio::task::spawn_blocking(move || {
+    let server = tokio::task::spawn_blocking(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
             .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
@@ -520,8 +600,35 @@ async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
                 vec![
                     OscArg::Int(0),
                     OscArg::Int(0),
+                    OscArg::Double(0.75),
+                    OscArg::Int(1),
+                ],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(0),
                     OscArg::Double(1.2),
                     OscArg::Int(0),
+                ],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(1.2),
+                    OscArg::Int(-1),
+                ],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(1.2),
+                    OscArg::Int(2),
                 ],
             ),
             (
@@ -533,12 +640,33 @@ async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
                 vec![OscArg::Int(0), OscArg::Int(99), OscArg::Double(-3.0)],
             ),
             (
+                "/Notify/Track/Out/Gain",
+                vec![OscArg::Int(0), OscArg::Int(99), OscArg::Float(-6.25)],
+            ),
+            (
+                "/Notify/Track/Out/Gain",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Bool(true)],
+            ),
+            (
                 "/Notify/Track/Out/Mute",
                 vec![OscArg::Int(0), OscArg::Int(99), OscArg::Bool(true)],
             ),
             (
                 "/Notify/Track/Pan",
                 vec![OscArg::Int(0), OscArg::Int(99), OscArg::Double(30.0)],
+            ),
+            (
+                "/Notify/Balance",
+                vec![OscArg::Int(0), OscArg::Int(99), OscArg::Double(0.75)],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(99),
+                    OscArg::Double(1.2),
+                    OscArg::Int(1),
+                ],
             ),
             (
                 "/Notify/Scene/Name",
@@ -549,39 +677,63 @@ async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
         for (address, args) in script {
             stream.write_all(&make_lv1_frame(address, &args)).unwrap();
         }
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        let _ = peer_released.blocking_recv();
     });
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
-    let mute_facts = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        let mut mute_facts = Vec::new();
-        loop {
-            match events.recv().await.unwrap() {
-                AppEvent::Lv1 {
-                    event:
-                        Lv1Event::MuteChanged {
-                            group: 0,
-                            channel: 0,
-                            muted,
-                        },
-                    ..
-                } => mute_facts.push(muted),
-                AppEvent::Lv1 {
-                    event: Lv1Event::SceneChanged(_),
-                    ..
-                } => break mute_facts,
-                _ => {}
+    let (mute_facts, width_facts) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut mute_facts = Vec::new();
+            let mut width_facts = Vec::new();
+            loop {
+                match events.recv().await.unwrap() {
+                    AppEvent::Lv1 {
+                        event:
+                            Lv1Event::MuteChanged {
+                                group: 0,
+                                channel: 0,
+                                muted,
+                            },
+                        ..
+                    } => mute_facts.push(muted),
+                    AppEvent::Lv1 {
+                        event:
+                            Lv1Event::WidthChanged {
+                                group,
+                                channel,
+                                width,
+                            },
+                        ..
+                    } => width_facts.push((group, channel, width)),
+                    AppEvent::Lv1 {
+                        event:
+                            event @ (Lv1Event::FaderChanged { .. }
+                            | Lv1Event::PanChanged { .. }
+                            | Lv1Event::BalanceChanged { .. }),
+                        ..
+                    } => panic!("invalid or inapplicable update published a fact: {event:?}"),
+                    AppEvent::Lv1 {
+                        event: Lv1Event::SceneChanged(_),
+                        ..
+                    } => break (mute_facts, width_facts),
+                    _ => {}
+                }
             }
-        }
-    })
-    .await
-    .expect("actor did not finish the ordered update script");
+        })
+        .await
+        .expect("actor did not finish the ordered update script");
     assert_eq!(
         mute_facts,
         vec![false, true, true, false],
         "invalid integer mute reports must publish no facts"
+    );
+
+    assert_eq!(
+        width_facts,
+        vec![(0, 0, 0.75)],
+        "only an active width report for a known channel may publish a fact"
     );
 
     let (reply, snapshot) = oneshot::channel();
@@ -593,8 +745,9 @@ async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
         "invalid integer mute reports must not change the final valid false value"
     );
     assert_eq!(
-        snapshot.channels[0].width, None,
-        "inactive width must be ignored"
+        snapshot.channels[0].width,
+        Some(0.75),
+        "inactive, malformed, and unknown-channel width reports must preserve the last valid width"
     );
     assert_eq!(
         snapshot.channels[1].balance, None,
@@ -609,6 +762,8 @@ async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
         Some(0.0),
         "unknown-channel pan must not affect known channels"
     );
+    release_peer.send(()).unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

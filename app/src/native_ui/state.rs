@@ -295,8 +295,8 @@ mod tests {
 
         assert!(state.accept_snapshot(snapshot(0, "First")));
         assert!(!state.accept_snapshot(snapshot(0, "Equal")));
-        assert!(!state.accept_snapshot(snapshot(0, "Older")));
         assert!(state.accept_snapshot(snapshot(1, "Newer")));
+        assert!(!state.accept_snapshot(snapshot(0, "Older")));
         assert_eq!(state.snapshot().show_file_name, "Newer");
     }
 

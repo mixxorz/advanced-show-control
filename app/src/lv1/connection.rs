@@ -125,3 +125,32 @@ impl Lv1Connection {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_request_is_rejected_without_mailbox_admission() {
+        let authority = RuntimeGeneration::default();
+        let generation = authority.current().await;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let connection = Lv1Connection::new(
+            crate::lv1::test_actor_handle(sender),
+            authority.clone(),
+            generation,
+        );
+        authority.advance().await;
+
+        assert!(matches!(
+            connection
+                .request(|reply| Lv1Command::GetState { reply })
+                .await,
+            Err(AppCommandError::StaleGeneration)
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}

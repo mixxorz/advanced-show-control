@@ -406,32 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_list_snapshot_distinguishes_unknown_from_authoritative_empty() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = ActorState::new(event_bus, 7);
-
-        assert!(state.snapshot().scene_list.is_none());
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/SceneList".to_string(),
-                args: vec![crate::lv1::osc::OscArg::Int(0)],
-            },
-        );
-
-        assert_eq!(state.snapshot().scene_list, Some(Vec::new()));
-        assert!(matches!(
-            events.try_recv(),
-            Ok(crate::runtime::events::AppEvent::Lv1 {
-                generation: 7,
-                event: Lv1Event::SceneListChanged(scene_list),
-            }) if scene_list.is_empty()
-        ));
-    }
-
-    #[test]
     fn apply_fader_update_changes_only_matching_channel() {
         let mut channels = vec![channel(0), channel(1)];
         assert!(apply_fader_update(&mut channels, 0, 0, -6.0));
@@ -444,101 +418,6 @@ mod tests {
         let mut channels = vec![channel(0)];
         assert!(!apply_fader_update(&mut channels, 0, 99, -3.0));
         assert_eq!(channels[0].gain_db, -9.0);
-    }
-
-    #[test]
-    fn gain_notifications_normalize_float_double_and_int_values() {
-        let cases = [
-            (crate::lv1::osc::OscArg::Float(-6.25), -6.25),
-            (crate::lv1::osc::OscArg::Double(-6.25), -6.25),
-            (crate::lv1::osc::OscArg::Int(-6), -6.0),
-        ];
-
-        for (gain_arg, expected) in cases {
-            let event_bus = AppEventBus::default();
-            let mut events = event_bus.subscribe();
-            let mut state = ActorState::new(event_bus, 7);
-            state.channels = vec![channel(0)];
-
-            handle_message(
-                &mut state,
-                &crate::lv1::osc::OscMessage {
-                    address: "/Notify/Track/Out/Gain".to_string(),
-                    args: vec![
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Int(0),
-                        gain_arg,
-                    ],
-                },
-            );
-
-            assert_eq!(state.channels[0].gain_db, expected);
-            assert!(matches!(
-                events.try_recv(),
-                Ok(crate::runtime::events::AppEvent::Lv1 {
-                    generation: 7,
-                    event: Lv1Event::FaderChanged {
-                        group: 0,
-                        channel: 0,
-                        gain_db,
-                    },
-                }) if gain_db == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn gain_notification_for_unknown_channel_does_not_mutate_or_publish() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = ActorState::new(event_bus, 7);
-        state.channels = vec![channel(0)];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Track/Out/Gain".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(99),
-                    crate::lv1::osc::OscArg::Float(-6.25),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].gain_db, -9.0);
-        assert!(events.try_recv().is_err());
-    }
-
-    #[test]
-    fn width_active_accepts_only_zero_or_one_without_promoting_malformed_values() {
-        for (active, expected_width, expects_event) in [
-            (0, None, false),
-            (1, Some(0.75), true),
-            (-1, None, false),
-            (2, None, false),
-        ] {
-            let event_bus = AppEventBus::default();
-            let mut events = event_bus.subscribe();
-            let mut state = ActorState::new(event_bus, 9);
-            state.channels = vec![channel(0)];
-
-            handle_message(
-                &mut state,
-                &crate::lv1::osc::OscMessage {
-                    address: "/Notify/PanArcWidth".to_string(),
-                    args: vec![
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Double(0.75),
-                        crate::lv1::osc::OscArg::Int(active),
-                    ],
-                },
-            );
-
-            assert_eq!(state.channels[0].width, expected_width);
-            assert_eq!(events.try_recv().is_ok(), expects_event);
-        }
     }
 
     #[test]

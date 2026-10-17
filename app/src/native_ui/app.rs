@@ -1275,10 +1275,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DIRTY_SESSION_PROMPT_CHOICES, about_detail, cue_completion_matches_session,
-        dirty_session_prompt_title, ensure_show_file_extension, is_show_file_path,
-        modal_surface_active, session_query_is_stale, suggested_save_file_name,
-        update_edit_epoch_is_stale,
+        DIRTY_SESSION_PROMPT_CHOICES, cue_completion_matches_session, dirty_session_prompt_title,
+        ensure_show_file_extension, is_show_file_path, modal_surface_active,
+        session_query_is_stale, suggested_save_file_name, update_edit_epoch_is_stale,
     };
     use crate::projector::AppViewState;
 
@@ -1375,20 +1374,94 @@ mod tests {
         assert!(!update_edit_epoch_is_stale(None, 8)); // Explicit Discard is unconditional.
     }
 
-    #[test]
-    fn about_detail_identifies_the_project_and_license() {
-        assert_eq!(
-            about_detail(),
-            concat!(
-                "Release ",
-                env!("ASC_RELEASE_ID"),
-                " (",
-                env!("ASC_RELEASE_VERSION"),
-                ")",
-                "\n\nGPUI Kit desktop control for Waves eMotion LV1 scene fades.",
-                "\n\nGPL-3.0-or-later",
-                "\nhttps://mitchel.me/advanced-show-control/"
-            )
-        );
+    #[gpui_kit::test]
+    fn about_action_opens_prompt_with_release_license_and_project_link(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{AppContext as _, px, size};
+
+        use super::{About, AppRoot, CueListsView, GoSubmissionGuard, ScenesView, SettingsView};
+        use crate::native_ui::{CommandDispatcher, ui_event_channel};
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (ui_events, receiver) = ui_event_channel();
+        let (settings, _settings_mailbox) = tokio::sync::mpsc::channel(8);
+        let dispatcher = {
+            let _entered = runtime.enter();
+            let events = crate::runtime::events::AppEventBus::default();
+            let (show, _task, peers, lockout) = crate::show::build_show_actor(events.clone());
+            let lifecycle = crate::lifecycle::AppLifecycle::new(
+                events,
+                show.clone(),
+                peers,
+                lockout,
+                settings.clone(),
+            );
+            let (logs, _) = tokio::sync::broadcast::channel(8);
+            let commands =
+                crate::application::ApplicationCommandContext::new(lifecycle, show, settings, logs);
+            CommandDispatcher::new(runtime.handle().clone(), commands, ui_events)
+        };
+        let (_sink, projections) = crate::projector::projection_channel();
+        cx.update(gpui_kit::init);
+        let handle = cx.open_window(size(px(1180.), px(780.)), |window, cx| {
+            let initial = AppViewState::default();
+            let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
+            let scenes =
+                cx.new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
+            let cues = cx.new(|cx| {
+                CueListsView::new(
+                    initial.clone(),
+                    dispatcher.clone(),
+                    go_submissions.clone(),
+                    window,
+                    cx,
+                )
+            });
+            let settings = cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
+            let app = cx.new(|cx| {
+                AppRoot::new(
+                    dispatcher,
+                    projections,
+                    receiver,
+                    scenes,
+                    cues,
+                    settings,
+                    go_submissions,
+                    window,
+                    cx,
+                )
+            });
+            app.update(cx, |app, cx| {
+                app.connection.borrow_mut().close();
+                app.focus.focus(window, cx);
+            });
+            Root::new(app, window, cx)
+        });
+
+        assert!(!cx.has_pending_prompt());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(Box::new(About), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let (title, detail) = cx
+            .pending_prompt()
+            .expect("About must open its native prompt");
+        assert_eq!(title, "Advanced Show Control");
+        assert!(detail.contains(env!("ASC_RELEASE_ID")));
+        assert!(detail.contains(env!("ASC_RELEASE_VERSION")));
+        assert!(detail.contains("GPL-3.0-or-later"));
+        assert!(detail.contains("https://mitchel.me/advanced-show-control/"));
+        cx.simulate_prompt_answer("OK");
     }
 }

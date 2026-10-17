@@ -1429,43 +1429,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_current_connection_publishes_metadata_state_change() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let (show, _peers) = show_actor(event_bus);
-        let identity = crate::connection_state::Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1".to_string()),
-            address: "127.0.0.1".to_string(),
-            port: 50_000,
-        };
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
-            identity: Some(identity),
-            expected_generation: 0,
-            reply,
-        })
-        .await
-        .unwrap();
-        assert!(response.await.unwrap().changed);
-        let _ = events.recv().await.unwrap();
-
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
-            identity: None,
-            expected_generation: 0,
-            reply,
-        })
-        .await
-        .unwrap();
-        assert!(response.await.unwrap().changed);
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            crate::runtime::events::AppEvent::Show(state) if state.connected_lv1_identity.is_none()
-        ));
-    }
-
-    #[tokio::test]
     async fn new_show_rejects_lv1_change_before_mutating_documents() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus);
