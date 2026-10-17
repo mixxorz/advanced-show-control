@@ -704,7 +704,8 @@ impl AppLifecycle {
             .map(|runtime| runtime.lv1.clone())
     }
 
-    pub async fn current_fade(&self) -> Option<FadeEngineHandle> {
+    #[cfg(test)]
+    async fn current_fade(&self) -> Option<FadeEngineHandle> {
         self.inner
             .lock()
             .await

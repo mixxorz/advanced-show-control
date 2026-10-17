@@ -16,7 +16,6 @@ pub const CONSOLE_LINE_STRONG: u32 = 0x3a3a40;
 pub const CONSOLE_PRIMARY: u32 = 0xdedbd6;
 pub const CONSOLE_SECONDARY: u32 = 0xb8b3ab;
 pub const CONSOLE_MUTED: u32 = 0x8f8981;
-pub const CONSOLE_DISABLED: u32 = 0x56524d;
 
 pub const SCROLLBAR_WIDTH: f32 = 16.;
 pub const SCROLLBAR_CONTENT_INSET: f32 = SCROLLBAR_WIDTH + 12.;

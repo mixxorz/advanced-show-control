@@ -78,10 +78,6 @@ impl ProjectionCache {
         self.fade_state = AppFadeState::Idle;
     }
 
-    pub fn is_active_generation(&self, generation: u64) -> bool {
-        self.active_generation == generation
-    }
-
     pub fn active_generation(&self) -> u64 {
         self.active_generation
     }

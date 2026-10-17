@@ -7249,15 +7249,6 @@ mod tests {
                     crate::lv1::Lv1Command::SetGain { reply, .. } => {
                         let _ = reply.unwrap().send(Ok(()));
                     }
-                    crate::lv1::Lv1Command::SetPan { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
-                    crate::lv1::Lv1Command::SetBalance { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
-                    crate::lv1::Lv1Command::SetWidth { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
                     crate::lv1::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.unwrap().send(Ok(()));
                     }
@@ -7313,15 +7304,6 @@ mod tests {
                     }
                     crate::lv1::Lv1Command::WriteBatch(_) => {}
                     crate::lv1::Lv1Command::SetGain { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
-                    crate::lv1::Lv1Command::SetPan { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
-                    crate::lv1::Lv1Command::SetBalance { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
-                    }
-                    crate::lv1::Lv1Command::SetWidth { reply, .. } => {
                         let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetMute { reply, .. } => {

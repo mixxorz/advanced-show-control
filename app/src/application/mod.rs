@@ -611,15 +611,6 @@ impl ApplicationCommandContext {
         .await
     }
 
-    pub async fn recall_cued_cue(&self) -> Result<CueRecallResult, String> {
-        let (reply, response) = oneshot::channel();
-        self.cue_lists
-            .send(CueListsCommand::RecallCuedCue { reply })
-            .await
-            .map_err(|_| cue_lists_unavailable())?;
-        complete_cued_cue_recall(response).await
-    }
-
     /// @cc [owner:mixxorz,label:safety;ordering] ui-go-synchronous-admission
     /// Each successful call MUST enqueue its GO command before returning so sequential UI callbacks
     /// preserve press order. A full or closed cue mailbox MUST return an error without creating a

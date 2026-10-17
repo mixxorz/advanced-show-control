@@ -624,6 +624,41 @@ mod tests {
     }
 
     #[test]
+    fn next_scene_requires_the_active_entry_to_resolve_to_a_scene_config() {
+        let list_id = Uuid::new_v4();
+        let entry_id = Uuid::new_v4();
+        let scene_id = Uuid::new_v4();
+        let mut view = AppViewState {
+            active_cue_list_id: Some(list_id.to_string()),
+            cued_cue_entry_id: Some(entry_id.to_string()),
+            cue_lists: vec![CueList {
+                id: list_id,
+                name: "Main".to_string(),
+                entries: vec![CueEntry {
+                    id: entry_id,
+                    scene_internal_id: scene_id,
+                }],
+            }],
+            ..Default::default()
+        };
+        assert!(resolve_next_scene(&view, 0).is_none());
+
+        view.scene_configs.push(SceneConfig {
+            internal_scene_id: scene_id,
+            scene_index: Some(1),
+            scene_name: "Intro".to_string(),
+            duration_ms: 1_000,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: Default::default(),
+        });
+        assert_eq!(
+            resolve_next_scene(&view, 0).map(|scene| scene.internal_scene_id),
+            Some(scene_id)
+        );
+    }
+
+    #[test]
     fn go_click_guard_rejects_double_click_events_but_accepts_distinct_clicks() {
         assert!(should_dispatch_go_click(1));
         assert!(should_dispatch_go_click(1));

@@ -8,11 +8,11 @@ use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
 pub const MIN_SEND_DELTA_POS: f64 = 0.002;
-/// Minimum pan change (±100) required to send a SetPan command.
+/// Minimum pan change (±100) required to include a pan write in a batch.
 pub const MIN_SEND_DELTA_PAN: f64 = 0.9;
-/// Minimum balance change (±100) required to send a SetBalance command.
+/// Minimum balance change (±100) required to include a balance write in a batch.
 pub const MIN_SEND_DELTA_BALANCE: f64 = 0.9;
-/// Minimum width change required to send a SetWidth command.
+/// Minimum width change required to include a width write in a batch.
 pub const MIN_SEND_DELTA_WIDTH: f64 = 0.028;
 /// Fader position deviation (0.0–1.0) required to declare a manual override.
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.

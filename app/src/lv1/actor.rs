@@ -206,21 +206,6 @@ fn drain_disconnected_command(
                 let _ = reply.send(Err(Lv1ActorError::NotConnected));
             }
         }
-        Lv1Command::SetPan { reply, .. } => {
-            if let Some(reply) = reply {
-                let _ = reply.send(Err(Lv1ActorError::NotConnected));
-            }
-        }
-        Lv1Command::SetBalance { reply, .. } => {
-            if let Some(reply) = reply {
-                let _ = reply.send(Err(Lv1ActorError::NotConnected));
-            }
-        }
-        Lv1Command::SetWidth { reply, .. } => {
-            if let Some(reply) = reply {
-                let _ = reply.send(Err(Lv1ActorError::NotConnected));
-            }
-        }
         Lv1Command::SetMute { reply, .. } => {
             if let Some(reply) = reply {
                 let _ = reply.send(Err(Lv1ActorError::NotConnected));
@@ -523,81 +508,6 @@ async fn run_connected(
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetGain send failed (encode or writer queue)".to_string(),
-                            );
-                        }
-                    }
-                    Some(Lv1Command::SetPan { group, channel, value, reply }) => {
-                        let result = encode_frame(
-                            "/Set/Track/Pan",
-                            &[
-                                OscArg::Int(group),
-                                OscArg::Int(channel),
-                                OscArg::Double(value),
-                            ],
-                        )
-                        .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        .and_then(|bytes| {
-                            enqueue_writer_bytes(&writer_tx, bytes)
-                                .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        });
-
-                        let failed = result.is_err();
-                        if let Some(reply) = reply {
-                            let _ = reply.send(result);
-                        }
-                        if failed {
-                            return DisconnectReason::TcpError(
-                                "SetPan send failed (encode or writer queue)".to_string(),
-                            );
-                        }
-                    }
-                    Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
-                        let result = encode_frame(
-                            "/Set/Track/Pan/Balance",
-                            &[
-                                OscArg::Int(group),
-                                OscArg::Int(channel),
-                                OscArg::Double(value),
-                            ],
-                        )
-                        .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        .and_then(|bytes| {
-                            enqueue_writer_bytes(&writer_tx, bytes)
-                                .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        });
-
-                        let failed = result.is_err();
-                        if let Some(reply) = reply {
-                            let _ = reply.send(result);
-                        }
-                        if failed {
-                            return DisconnectReason::TcpError(
-                                "SetBalance send failed (encode or writer queue)".to_string(),
-                            );
-                        }
-                    }
-                    Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
-                        let result = encode_frame(
-                            "/Set/Track/Pan/Width",
-                            &[
-                                OscArg::Int(group),
-                                OscArg::Int(channel),
-                                OscArg::Double(value),
-                            ],
-                        )
-                        .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        .and_then(|bytes| {
-                            enqueue_writer_bytes(&writer_tx, bytes)
-                                .map_err(|_| Lv1ActorError::CommandSendFailed)
-                        });
-
-                        let failed = result.is_err();
-                        if let Some(reply) = reply {
-                            let _ = reply.send(result);
-                        }
-                        if failed {
-                            return DisconnectReason::TcpError(
-                                "SetWidth send failed (encode or writer queue)".to_string(),
                             );
                         }
                     }

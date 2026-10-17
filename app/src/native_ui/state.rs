@@ -206,12 +206,6 @@ impl PresentationState {
         accepted
     }
 
-    pub fn begin_command(&mut self) -> u64 {
-        let command_id = self.latest_command_id.wrapping_add(1);
-        self.command_started(command_id);
-        command_id
-    }
-
     pub fn command_started(&mut self, command_id: u64) {
         if command_id > self.latest_command_id {
             self.latest_command_id = command_id;
@@ -232,32 +226,6 @@ impl PresentationState {
 
     pub fn window_title(&self) -> String {
         format_session_window_title(&self.snapshot.show_file_name, self.snapshot.show_file_dirty)
-    }
-
-    pub fn cued_scene_is_valid(&self) -> bool {
-        let Some(active_list_id) = self.snapshot.active_cue_list_id.as_deref() else {
-            return false;
-        };
-        let Some(cued_entry_id) = self.snapshot.cued_cue_entry_id.as_deref() else {
-            return false;
-        };
-        let Some(entry) = self
-            .snapshot
-            .cue_lists
-            .iter()
-            .find(|list| list.id.to_string() == active_list_id)
-            .and_then(|list| {
-                list.entries
-                    .iter()
-                    .find(|entry| entry.id.to_string() == cued_entry_id)
-            })
-        else {
-            return false;
-        };
-        self.snapshot
-            .scene_configs
-            .iter()
-            .any(|scene| scene.internal_scene_id == entry.scene_internal_id)
     }
 }
 
@@ -283,7 +251,6 @@ pub(super) fn session_display_name(show_file_name: &str) -> &str {
 mod tests {
     use super::*;
     use crate::cue_lists::{CueEntry, CueList};
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
     use uuid::Uuid;
 
     fn snapshot(version: u64, name: &str) -> AppViewState {
@@ -407,8 +374,10 @@ mod tests {
     #[test]
     fn older_command_result_cannot_replace_latest_command_error() {
         let mut state = PresentationState::default();
-        let first = state.begin_command();
-        let second = state.begin_command();
+        let first = 1;
+        let second = 2;
+        state.command_started(first);
+        state.command_started(second);
 
         assert!(state.complete_command(second, Err("new failure".to_string())));
         assert!(!state.complete_command(first, Ok(())));
@@ -432,39 +401,5 @@ mod tests {
             format_session_window_title("Show.ascs", false),
             "Advanced Show Control - Show"
         );
-    }
-
-    #[test]
-    fn cued_scene_is_valid_only_when_active_entry_resolves_to_scene_config() {
-        let list_id = Uuid::new_v4();
-        let entry_id = Uuid::new_v4();
-        let scene_id = Uuid::new_v4();
-        let mut state = PresentationState::default();
-        let mut view = snapshot(1, "Show");
-        view.active_cue_list_id = Some(list_id.to_string());
-        view.cued_cue_entry_id = Some(entry_id.to_string());
-        view.cue_lists = vec![CueList {
-            id: list_id,
-            name: "Main".to_string(),
-            entries: vec![CueEntry {
-                id: entry_id,
-                scene_internal_id: scene_id,
-            }],
-        }];
-        assert!(state.accept_snapshot(view.clone()));
-        assert!(!state.cued_scene_is_valid());
-
-        view.state_version = 2;
-        view.scene_configs.push(SceneConfig {
-            internal_scene_id: scene_id,
-            scene_index: Some(1),
-            scene_name: "Intro".to_string(),
-            duration_ms: 1_000,
-            channel_configs: Vec::new(),
-            scoped_channels: Vec::new(),
-            scope_toggles: SceneScopeToggles::default(),
-        });
-        assert!(state.accept_snapshot(view));
-        assert!(state.cued_scene_is_valid());
     }
 }
