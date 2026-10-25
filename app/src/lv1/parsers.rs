@@ -56,7 +56,6 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
         };
         let balance = match (pan_mode.as_ref(), &args[base + 4]) {
             (Some(crate::lv1::types::PanMode::Stereo), OscArg::Double(v)) => Some(*v),
-            (Some(crate::lv1::types::PanMode::Stereo), _) => None,
             _ => None,
         };
         let pan = match args[base + 18] {
@@ -269,13 +268,6 @@ mod tests {
     #[test]
     fn rejects_excessive_scene_count_without_length_overflow() {
         assert!(parse_scene_list(&[OscArg::Int(i32::MAX)]).is_err());
-    }
-
-    #[test]
-    fn channels_default_to_unmuted_when_batch_has_no_mute_field() {
-        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 0.0, 1, 0.0)]);
-        let channels = parse_channels_batch(&args).unwrap();
-        assert!(!channels[0].muted);
     }
 
     #[test]

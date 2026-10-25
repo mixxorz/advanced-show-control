@@ -111,7 +111,7 @@ impl ApplicationCommandContext {
             .map_err(|_| "Updates are unavailable.".to_string())
     }
 
-    pub async fn frontend_ready(&self) -> Result<ProjectionSubscription, String> {
+    pub async fn frontend_ready(&self) -> ProjectionSubscription {
         self.lifecycle
             .frontend_ready(self.ui_logs.subscribe())
             .await
@@ -158,36 +158,10 @@ impl ApplicationCommandContext {
         receive(response).await
     }
 
-    pub fn persisted_session_revision(&self) -> u64 {
-        self.lifecycle.persisted_session_revision()
-    }
-
-    pub fn admit_persisted_session_revision<T>(
-        &self,
-        expected_revision: u64,
-        admit: impl FnOnce() -> T,
-    ) -> Option<T> {
-        self.lifecycle
-            .admit_persisted_session_revision(expected_revision, admit)
-    }
-
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
             .await?;
-        receive_nested(response).await
-    }
-
-    pub async fn guarded_new_show_file(
-        &self,
-        expected_persisted_revision: u64,
-    ) -> Result<NewShowFileResult, String> {
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedNewShowFileFromCurrentLv1 {
-            expected_persisted_revision,
-            reply: Some(reply),
-        })
-        .await?;
         receive_nested(response).await
     }
 
@@ -210,24 +184,6 @@ impl ApplicationCommandContext {
         receive_nested(response).await.map(Some)
     }
 
-    pub async fn guarded_open_show_file(
-        &self,
-        path: Option<PathBuf>,
-        expected_persisted_revision: u64,
-    ) -> Result<Option<LoadShowFileResult>, String> {
-        let Some(path) = path else {
-            return Ok(None);
-        };
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedLoadShowFileFromPath {
-            path,
-            expected_persisted_revision,
-            reply: Some(reply),
-        })
-        .await?;
-        receive_nested(response).await.map(Some)
-    }
-
     /// A missing path means the host picker was cancelled without changing the current session.
     pub async fn new_show_file_from_template(
         &self,
@@ -239,24 +195,6 @@ impl ApplicationCommandContext {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromTemplate {
             path,
-            reply: Some(reply),
-        })
-        .await?;
-        receive_nested(response).await.map(Some)
-    }
-
-    pub async fn guarded_new_show_file_from_template(
-        &self,
-        path: Option<PathBuf>,
-        expected_persisted_revision: u64,
-    ) -> Result<Option<NewShowFileResult>, String> {
-        let Some(path) = path else {
-            return Ok(None);
-        };
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedNewShowFileFromTemplate {
-            path,
-            expected_persisted_revision,
             reply: Some(reply),
         })
         .await?;
@@ -319,11 +257,7 @@ impl ApplicationCommandContext {
         self.settings
             .send(SettingsCommand::ReplaceSettings { settings, reply })
             .await
-            .map_err(|_| {
-                map_app_command_error(AppCommandError::CommandFailed(
-                    "Settings unavailable".to_string(),
-                ))
-            })?;
+            .map_err(|_| "Settings unavailable".to_string())?;
         receive_nested(response).await
     }
 
@@ -547,10 +481,8 @@ impl ApplicationCommandContext {
         cue_list_id: Uuid,
         cue_entry_id: Uuid,
         scene_internal_id: Uuid,
-        expected_session_revision: u64,
     ) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::EditCueEntry {
-            expected_session_revision,
             cue_list_id,
             cue_entry_id,
             scene_internal_id,
@@ -565,10 +497,8 @@ impl ApplicationCommandContext {
         scene_internal_id: Uuid,
         insert_index: usize,
         expected_entry_ids: Vec<Uuid>,
-        expected_session_revision: u64,
     ) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::InsertCueEntry {
-            expected_session_revision,
             cue_list_id,
             scene_internal_id,
             insert_index,
@@ -609,15 +539,6 @@ impl ApplicationCommandContext {
             reply: Some(reply),
         })
         .await
-    }
-
-    pub async fn recall_cued_cue(&self) -> Result<CueRecallResult, String> {
-        let (reply, response) = oneshot::channel();
-        self.cue_lists
-            .send(CueListsCommand::RecallCuedCue { reply })
-            .await
-            .map_err(|_| cue_lists_unavailable())?;
-        complete_cued_cue_recall(response).await
     }
 
     /// @cc [owner:mixxorz,label:safety;ordering] ui-go-synchronous-admission
@@ -685,14 +606,6 @@ fn enqueue_cued_cue_recall(cue_lists: &CueListsHandle) -> Result<PendingCueRecal
     Ok(response)
 }
 
-pub(crate) async fn complete_cued_cue_recall(
-    response: PendingCueRecall,
-) -> Result<CueRecallResult, String> {
-    complete_cued_cue_recall_typed(response)
-        .await
-        .map_err(map_app_command_error)
-}
-
 pub(crate) async fn complete_cued_cue_recall_typed(
     response: PendingCueRecall,
 ) -> Result<CueRecallResult, AppCommandError> {
@@ -702,9 +615,7 @@ pub(crate) async fn complete_cued_cue_recall_typed(
 }
 
 fn cue_lists_unavailable() -> String {
-    map_app_command_error(AppCommandError::CommandFailed(
-        "cue lists are unavailable".to_string(),
-    ))
+    "cue lists are unavailable".to_string()
 }
 
 fn map_app_command_error(error: AppCommandError) -> String {
@@ -830,14 +741,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            complete_cued_cue_recall(first_response)
+            complete_cued_cue_recall_typed(first_response)
                 .await
                 .unwrap()
                 .recalled_entry_id,
             first_id
         );
         assert_eq!(
-            complete_cued_cue_recall(second_response)
+            complete_cued_cue_recall_typed(second_response)
                 .await
                 .unwrap()
                 .recalled_entry_id,
@@ -875,7 +786,7 @@ mod tests {
             reply
                 .unwrap()
                 .send(Ok(NewShowFileResult {
-                    selected_scene_internal_id: Some("scene-id".to_string()),
+                    selected_scene_internal_id: Some(Uuid::from_u128(1)),
                 }))
                 .unwrap();
         });
@@ -887,7 +798,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .selected_scene_internal_id,
-            Some("scene-id".to_string())
+            Some(Uuid::from_u128(1))
         );
         actor.await.unwrap();
     }
@@ -905,7 +816,6 @@ mod tests {
                     show_file_path: Some(PathBuf::from("authoritative.ascs")),
                     show_file_name: "authoritative.ascs".to_string(),
                     show_file_dirty: true,
-                    persisted_session_revision: 7,
                 })
                 .unwrap();
         });
@@ -917,7 +827,6 @@ mod tests {
         );
         assert!(state.show_file_dirty);
         assert_eq!(state.show_file_name, "authoritative.ascs");
-        assert_eq!(state.persisted_session_revision, 7);
         actor.await.unwrap();
     }
 

@@ -252,14 +252,11 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
     let before = session.document().await;
     let list = before.active_cue_list_id.unwrap();
     let mut events = session.events.subscribe();
-    let expected_session_revision = session.events.state().borrow().session_revision;
-    let mut revision = session.events.persisted_session_revision();
 
     let (reply, response) = oneshot::channel();
     session
         .cues
         .send(CueListsCommand::EditCueEntry {
-            expected_session_revision,
             cue_list_id: list,
             cue_entry_id: entry.id,
             scene_internal_id: original,
@@ -268,7 +265,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
         .await
         .unwrap();
     assert!(!response.await.unwrap().unwrap().changed);
-    assert_eq!(session.events.persisted_session_revision(), revision);
     assert!(
         !std::iter::from_fn(|| events.try_recv().ok())
             .any(|event| matches!(event, AppEvent::CueLists(_)))
@@ -284,7 +280,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
         session
             .cues
             .send(CueListsCommand::EditCueEntry {
-                expected_session_revision,
                 cue_list_id,
                 cue_entry_id,
                 scene_internal_id,
@@ -293,7 +288,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
             .await
             .unwrap();
         assert!(response.await.unwrap().is_err());
-        assert_eq!(session.events.persisted_session_revision(), revision);
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
                 .any(|event| matches!(event, AppEvent::CueLists(_)))
@@ -305,7 +299,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
     session
         .cues
         .send(CueListsCommand::EditCueEntry {
-            expected_session_revision,
             cue_list_id: list,
             cue_entry_id: entry.id,
             scene_internal_id: replacement,
@@ -314,8 +307,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
         .await
         .unwrap();
     assert!(response.await.unwrap().unwrap().changed);
-    revision += 1;
-    assert_eq!(session.events.persisted_session_revision(), revision);
     let projection = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::CueLists(state) => Some(state),
@@ -342,7 +333,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
         session
             .cues
             .send(CueListsCommand::InsertCueEntry {
-                expected_session_revision,
                 cue_list_id,
                 scene_internal_id,
                 insert_index,
@@ -352,7 +342,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
             .await
             .unwrap();
         assert!(response.await.unwrap().is_err());
-        assert_eq!(session.events.persisted_session_revision(), revision);
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
                 .any(|event| matches!(event, AppEvent::CueLists(_)))
@@ -362,7 +351,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
     session
         .cues
         .send(CueListsCommand::InsertCueEntry {
-            expected_session_revision,
             cue_list_id: list,
             scene_internal_id: inserted_scene,
             insert_index: 0,
@@ -372,7 +360,6 @@ async fn inline_cue_mutations_publish_only_real_edits_and_preserve_cued_identity
         .await
         .unwrap();
     let inserted = response.await.unwrap().unwrap().entry.unwrap();
-    assert_eq!(session.events.persisted_session_revision(), revision + 1);
     let projection = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::CueLists(state) => Some(state),
@@ -670,7 +657,6 @@ async fn cue_advances_only_after_successful_lv1_dispatch() {
             session
                 .cues
                 .send(CueListsCommand::EditCueEntry {
-                    expected_session_revision: session.events.state().borrow().session_revision,
                     cue_list_id: list_id,
                     cue_entry_id: entry.id,
                     scene_internal_id: id,
@@ -684,7 +670,6 @@ async fn cue_advances_only_after_successful_lv1_dispatch() {
             session
                 .cues
                 .send(CueListsCommand::EditCueEntry {
-                    expected_session_revision: session.events.state().borrow().session_revision,
                     cue_list_id: list_id,
                     cue_entry_id: entry.id,
                     scene_internal_id: replacement_id,
@@ -698,7 +683,6 @@ async fn cue_advances_only_after_successful_lv1_dispatch() {
             session
                 .cues
                 .send(CueListsCommand::InsertCueEntry {
-                    expected_session_revision: session.events.state().borrow().session_revision,
                     cue_list_id: list_id,
                     scene_internal_id: id,
                     insert_index: 2,
@@ -884,184 +868,6 @@ async fn timed_out_new_session_leaves_documents_intact_and_releases_show_command
         .unwrap();
     assert!(response.await.unwrap().changed);
     drop(gate);
-    assert_eq!(session.snapshot().await, original);
-}
-
-#[tokio::test]
-async fn replacement_queued_during_recall_dispatch_preserves_the_replacement_document() {
-    let id = Uuid::new_v4();
-    let mut config = scene(id);
-    config.scene_index = Some(1);
-    let mut session = Session::with_scenes(vec![config]).await;
-    session.cue(id).await;
-    let original = session.snapshot().await;
-    let mut recalls = Vec::new();
-    for _ in 0..3 {
-        let (reply, recalled) = oneshot::channel();
-        session
-            .cues
-            .send(CueListsCommand::RecallCuedCue { reply })
-            .await
-            .unwrap();
-        recalls.push(recalled);
-    }
-    let crate::lv1::Lv1Command::RecallScene {
-        reply: Some(dispatch),
-        ..
-    } = session.recalls.recv().await.unwrap()
-    else {
-        panic!("expected recall");
-    };
-    let (_, replaced) = session.replace(original.clone(), 0).await;
-    assert_eq!(replaced.await.unwrap().unwrap(), original);
-    assert!(
-        dispatch
-            .send(Ok(crate::lv1::RecallSceneDispatch {
-                scene_observation_sequence: 0,
-            }))
-            .is_err()
-    );
-    for recalled in recalls {
-        assert!(matches!(
-            recalled.await.unwrap(),
-            Err(crate::runtime::errors::AppCommandError::RecallCanceled(reason))
-                if reason == "session was replaced"
-        ));
-    }
-    assert!(session.recalls.try_recv().is_err());
-    assert_eq!(session.snapshot().await, original);
-}
-
-#[tokio::test]
-async fn replacement_rejects_queued_inline_cue_edits_even_with_reused_ids() {
-    let scene_id = Uuid::new_v4();
-    let other_scene_id = Uuid::new_v4();
-    let mut config = scene(scene_id);
-    config.scene_index = Some(1);
-    let mut session = Session::with_scenes(vec![config, scene(other_scene_id)]).await;
-    let entry = session.cue(scene_id).await;
-    let original = session.snapshot().await;
-    let list_id = original.cue_lists.active_cue_list_id.unwrap();
-    let expected_session_revision = session.events.state().borrow().session_revision;
-    let (reply, recalled) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::RecallCuedCue { reply })
-        .await
-        .unwrap();
-    let crate::lv1::Lv1Command::RecallScene {
-        reply: Some(dispatch),
-        ..
-    } = session.recalls.recv().await.unwrap()
-    else {
-        panic!("expected held recall dispatch")
-    };
-
-    let (reply, edited) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::EditCueEntry {
-            expected_session_revision,
-            cue_list_id: list_id,
-            cue_entry_id: entry.id,
-            scene_internal_id: other_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-    let (reply, inserted) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::InsertCueEntry {
-            expected_session_revision,
-            cue_list_id: list_id,
-            scene_internal_id: other_scene_id,
-            insert_index: 1,
-            expected_entry_ids: vec![entry.id],
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-    let revision = session.events.persisted_session_revision();
-    let (_, replaced) = session.replace(original.clone(), 0).await;
-    assert_eq!(replaced.await.unwrap().unwrap(), original);
-    assert_eq!(
-        edited.await.unwrap(),
-        Err("Cue edit canceled: session was replaced".into())
-    );
-    assert_eq!(
-        inserted.await.unwrap(),
-        Err("Cue edit canceled: session was replaced".into())
-    );
-    assert!(matches!(
-        recalled.await.unwrap(),
-        Err(crate::runtime::errors::AppCommandError::RecallCanceled(_))
-    ));
-    assert!(
-        dispatch
-            .send(Ok(crate::lv1::RecallSceneDispatch {
-                scene_observation_sequence: 0
-            }))
-            .is_err()
-    );
-    assert_eq!(session.events.persisted_session_revision(), revision);
-    assert_eq!(session.snapshot().await, original);
-}
-
-#[tokio::test]
-async fn late_inline_cue_commands_reject_reused_ids_after_replacement() {
-    let scene_id = Uuid::new_v4();
-    let other_scene_id = Uuid::new_v4();
-    let session = Session::with_scenes(vec![scene(scene_id), scene(other_scene_id)]).await;
-    let entry = session.cue(scene_id).await;
-    let original = session.snapshot().await;
-    let list_id = original.cue_lists.active_cue_list_id.unwrap();
-    let stale_revision = session.events.state().borrow().session_revision;
-    let (_, replaced) = session.replace(original.clone(), 0).await;
-    assert_eq!(replaced.await.unwrap().unwrap(), original);
-    assert_ne!(
-        session.events.state().borrow().session_revision,
-        stale_revision
-    );
-    let persisted_revision = session.events.persisted_session_revision();
-
-    let (reply, edited) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::EditCueEntry {
-            expected_session_revision: stale_revision,
-            cue_list_id: list_id,
-            cue_entry_id: entry.id,
-            scene_internal_id: other_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        edited.await.unwrap(),
-        Err("Cue edit canceled: session was replaced".into())
-    );
-    let (reply, inserted) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::InsertCueEntry {
-            expected_session_revision: stale_revision,
-            cue_list_id: list_id,
-            scene_internal_id: other_scene_id,
-            insert_index: 1,
-            expected_entry_ids: vec![entry.id],
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        inserted.await.unwrap(),
-        Err("Cue edit canceled: session was replaced".into())
-    );
-    assert_eq!(
-        session.events.persisted_session_revision(),
-        persisted_revision
-    );
     assert_eq!(session.snapshot().await, original);
 }
 

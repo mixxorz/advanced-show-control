@@ -1,8 +1,7 @@
 //! Waves LV1 custom /zDNS discovery.
 
 use crate::lv1::osc::{OscArg, OscError, decode_packet};
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
+use std::net::{IpAddr, Ipv4Addr};
 
 pub const MCAST_ADDR: &str = "225.1.1.1";
 pub const MCAST_PORT: u16 = 13337;
@@ -162,18 +161,7 @@ fn read_timeout_for(remaining: std::time::Duration) -> Option<std::time::Duratio
     }
 }
 
-fn ipv4_like(value: &str) -> bool {
-    Ipv4Addr::from_str(value).is_ok()
-}
-
-fn ipv6_like(value: &str) -> bool {
-    Ipv6Addr::from_str(value).is_ok()
-}
-
-pub fn rank_ip(ip: &str) -> i32 {
-    let Ok(ip) = Ipv4Addr::from_str(ip) else {
-        return 0;
-    };
+fn rank_ip(ip: Ipv4Addr) -> i32 {
     let octets = ip.octets();
 
     if octets[0] == 127 {
@@ -220,11 +208,14 @@ pub fn parse_zdns_packet(bytes: &[u8], source: &str) -> Result<DiscoveryEntry, D
 
     for arg in msg.args.iter().skip(2) {
         match arg {
-            OscArg::String(value) if ipv4_like(value) => addresses.push(value.clone()),
-            OscArg::String(value) if ipv6_like(value) => ipv6.push(value.clone()),
-            OscArg::String(value) if host.is_none() && !value.is_empty() => {
-                host = Some(value.clone());
-            }
+            OscArg::String(value) => match value.parse::<IpAddr>() {
+                Ok(IpAddr::V4(ip)) => {
+                    addresses.push((std::cmp::Reverse(rank_ip(ip)), value.clone()))
+                }
+                Ok(IpAddr::V6(_)) => ipv6.push(value.clone()),
+                Err(_) if host.is_none() && !value.is_empty() => host = Some(value.clone()),
+                Err(_) => {}
+            },
             OscArg::Int(value) if port.is_none() && *value > 1024 && *value < 65536 => {
                 port = Some(*value as u16);
             }
@@ -232,14 +223,14 @@ pub fn parse_zdns_packet(bytes: &[u8], source: &str) -> Result<DiscoveryEntry, D
         }
     }
 
-    addresses.sort_by_key(|ip| std::cmp::Reverse(rank_ip(ip)));
+    addresses.sort_by_key(|(rank, _)| *rank);
 
     Ok(DiscoveryEntry {
         service: service.clone(),
         uuid,
         host,
         port,
-        addresses,
+        addresses: addresses.into_iter().map(|(_, address)| address).collect(),
         ipv6,
         source: source.to_string(),
     })
@@ -278,6 +269,33 @@ mod tests {
     }
 
     #[test]
+    fn zdns_preserves_address_text_and_equal_rank_order() {
+        let packet = encode_message(
+            "/zDNS",
+            &[
+                OscArg::String("_waveslv113._tcp".to_string()),
+                OscArg::String(String::new()),
+                OscArg::Int(1024),
+                OscArg::Int(65536),
+                OscArg::String("10.0.0.2".to_string()),
+                OscArg::String("10.0.0.1".to_string()),
+                OscArg::String("FE80:0:0:0:0:0:0:1".to_string()),
+                OscArg::String("host".to_string()),
+                OscArg::Int(65535),
+            ],
+        )
+        .unwrap();
+
+        let entry = parse_zdns_packet(&packet, "10.0.0.2").unwrap();
+
+        assert_eq!(entry.uuid, None);
+        assert_eq!(entry.host.as_deref(), Some("host"));
+        assert_eq!(entry.port, Some(65535));
+        assert_eq!(entry.addresses, ["10.0.0.2", "10.0.0.1"]);
+        assert_eq!(entry.ipv6, ["FE80:0:0:0:0:0:0:1"]);
+    }
+
+    #[test]
     fn rejects_non_zdns_packets() {
         let packet = encode_message("/not-zdns", &[]).unwrap();
         assert!(matches!(
@@ -288,9 +306,9 @@ mod tests {
 
     #[test]
     fn ranks_likely_lan_addresses_highest() {
-        assert!(rank_ip("192.168.1.10") > rank_ip("172.20.1.9"));
-        assert!(rank_ip("10.0.0.4") > rank_ip("169.254.1.1"));
-        assert!(rank_ip("127.0.0.1") < rank_ip("169.254.1.1"));
+        assert!(rank_ip("192.168.1.10".parse().unwrap()) > rank_ip("172.20.1.9".parse().unwrap()));
+        assert!(rank_ip("10.0.0.4".parse().unwrap()) > rank_ip("169.254.1.1".parse().unwrap()));
+        assert!(rank_ip("127.0.0.1".parse().unwrap()) < rank_ip("169.254.1.1".parse().unwrap()));
     }
 
     #[test]
@@ -317,10 +335,10 @@ mod tests {
 
     #[test]
     fn ranks_private_172_addresses_above_public_addresses() {
-        assert!(rank_ip("172.16.0.1") > rank_ip("8.8.8.8"));
-        assert!(rank_ip("172.31.255.254") > rank_ip("8.8.8.8"));
-        assert!(rank_ip("172.15.255.255") <= rank_ip("8.8.8.8"));
-        assert!(rank_ip("172.32.0.1") <= rank_ip("8.8.8.8"));
+        assert!(rank_ip("172.16.0.1".parse().unwrap()) > rank_ip("8.8.8.8".parse().unwrap()));
+        assert!(rank_ip("172.31.255.254".parse().unwrap()) > rank_ip("8.8.8.8".parse().unwrap()));
+        assert!(rank_ip("172.15.255.255".parse().unwrap()) <= rank_ip("8.8.8.8".parse().unwrap()));
+        assert!(rank_ip("172.32.0.1".parse().unwrap()) <= rank_ip("8.8.8.8".parse().unwrap()));
     }
 
     #[test]

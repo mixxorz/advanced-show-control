@@ -90,10 +90,7 @@ impl NativeRuntime {
             .with_updates(updates, update_install_queue.clone());
             (logging, commands, lifecycle)
         };
-        let projections = runtime
-            .block_on(commands.frontend_ready())
-            .map_err(anyhow::Error::msg)
-            .context("failed to start the application projector")?;
+        let projections = runtime.block_on(commands.frontend_ready());
 
         Ok(Self {
             runtime,

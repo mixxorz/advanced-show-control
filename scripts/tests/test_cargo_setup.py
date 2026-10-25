@@ -65,6 +65,24 @@ class CargoSetupTests(unittest.TestCase):
         setup.configure(self.worktree)
         self.assertEqual(self.read_config(self.main), self.read_config(self.worktree))
 
+    def test_platform_target_normalizes_supported_hosts_and_rejects_unsupported_ones(self):
+        for machine, system, expected in [
+            ("arm64", "Darwin", "aarch64-apple-darwin"),
+            ("AMD64", "Windows", "x86_64-pc-windows-msvc"),
+            ("x86_64", "Linux", "x86_64-unknown-linux-musl"),
+            ("aarch64", "Linux", "aarch64-unknown-linux-musl"),
+        ]:
+            with self.subTest(machine=machine, system=system), \
+                    patch.object(setup.platform, "machine", return_value=machine), \
+                    patch.object(setup.platform, "system", return_value=system):
+                self.assertEqual(setup.platform_target(), expected)
+        for machine, system in [("i386", "Linux"), ("x86_64", "FreeBSD")]:
+            with self.subTest(machine=machine, system=system), \
+                    patch.object(setup.platform, "machine", return_value=machine), \
+                    patch.object(setup.platform, "system", return_value=system), \
+                    self.assertRaisesRegex(RuntimeError, "No supported prebuilt sccache"):
+                setup.platform_target()
+
     def test_configuration_preserves_unicode_paths(self):
         main = self.main / "unicode 🎚"
         config = tomllib.loads(setup.config_text(main))

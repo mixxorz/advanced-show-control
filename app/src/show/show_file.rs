@@ -56,7 +56,6 @@ pub struct ImportedShowFile {
     pub snapshot: SceneDocument,
     pub cue_list_snapshot: CueListDocument,
     pub lockout: bool,
-    pub selected_scene_internal_id: Option<String>,
     pub generated_internal_scene_ids: bool,
 }
 
@@ -82,7 +81,15 @@ pub fn export_show_file(
         scene_configs: snapshot
             .scene_configs
             .into_iter()
-            .map(show_scene_to_file_scene)
+            .map(|config| ShowFileSceneConfig {
+                internal_scene_id: Some(config.internal_scene_id),
+                scene_index: config.scene_index,
+                scene_name: config.scene_name,
+                duration_ms: config.duration_ms,
+                channel_configs: config.channel_configs,
+                scoped_channels: config.scoped_channels,
+                scope_toggles: config.scope_toggles,
+            })
             .collect(),
     }
 }
@@ -121,20 +128,25 @@ pub fn import_show_file(
     let scene_configs = file
         .scene_configs
         .iter()
-        .map(file_scene_to_show_scene)
+        .map(|config| SceneConfig {
+            internal_scene_id: config.internal_scene_id.unwrap_or_else(uuid::Uuid::new_v4),
+            scene_index: config.scene_index,
+            scene_name: config.scene_name.clone(),
+            duration_ms: config.duration_ms,
+            channel_configs: config.channel_configs.clone(),
+            scoped_channels: config.scoped_channels.clone(),
+            scope_toggles: config.scope_toggles.clone(),
+        })
         .collect::<Vec<_>>();
-    let selected_scene_internal_id = scene_configs
-        .first()
-        .map(|config| config.internal_scene_id.to_string());
+    let selected_scene_internal_id = scene_configs.first().map(|config| config.internal_scene_id);
     let snapshot = SceneDocument {
         scene_configs,
-        selected_scene_internal_id: selected_scene_internal_id.clone(),
+        selected_scene_internal_id,
     };
 
     Ok(ImportedShowFile {
         snapshot,
         lockout: file.safety.lockout,
-        selected_scene_internal_id,
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -142,30 +154,6 @@ pub fn import_show_file(
             cued_cue_entry_id: file.cued_cue_entry_id,
         },
     })
-}
-
-fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
-    ShowFileSceneConfig {
-        internal_scene_id: Some(config.internal_scene_id),
-        scene_index: config.scene_index,
-        scene_name: config.scene_name,
-        duration_ms: config.duration_ms,
-        channel_configs: config.channel_configs,
-        scoped_channels: config.scoped_channels,
-        scope_toggles: config.scope_toggles,
-    }
-}
-
-fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
-    SceneConfig {
-        internal_scene_id: config.internal_scene_id.unwrap_or_else(uuid::Uuid::new_v4),
-        scene_index: config.scene_index,
-        scene_name: config.scene_name.clone(),
-        duration_ms: config.duration_ms,
-        channel_configs: config.channel_configs.clone(),
-        scoped_channels: config.scoped_channels.clone(),
-        scope_toggles: config.scope_toggles.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -394,12 +382,8 @@ mod tests {
             uuid::Uuid::nil()
         );
         assert_eq!(
-            imported.selected_scene_internal_id,
-            Some(
-                imported.snapshot.scene_configs[0]
-                    .internal_scene_id
-                    .to_string()
-            )
+            imported.snapshot.selected_scene_internal_id,
+            Some(imported.snapshot.scene_configs[0].internal_scene_id)
         );
         assert!(imported.generated_internal_scene_ids);
     }

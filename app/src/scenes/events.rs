@@ -3,7 +3,7 @@ use crate::scenes::SceneConfig;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScenesProjectionState {
     pub scene_configs: Vec<SceneConfig>,
-    pub selected_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<uuid::Uuid>,
     pub scene_settings_clipboard_available: bool,
     /// The runtime generation whose LV1 scene library reconciled these configurations.
     pub ready_generation: Option<u64>,

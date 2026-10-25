@@ -53,7 +53,7 @@ body:
     id: verification
     attributes:
       label: Testing And Verification
-      description: List the expected test style or command, such as Rust unit, actor, smoke, Vitest, Storybook, visual, docs/template inspection, or GitHub verification.
+      description: List the expected test style or command, such as Rust pure unit, actor, hardware smoke, native visual, docs/template inspection, or GitHub verification.
     validations:
       required: true
   - type: textarea

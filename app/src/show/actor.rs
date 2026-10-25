@@ -125,18 +125,7 @@ pub fn build_show_actor(
     ShowActorPeers,
     ShowLockoutReader,
 ) {
-    build_show_actor_with_state(event_bus, ShowState::default())
-}
-
-fn build_show_actor_with_state(
-    event_bus: AppEventBus,
-    state: ShowState,
-) -> (
-    ShowStateHandle,
-    ShowActorTask,
-    ShowActorPeers,
-    ShowLockoutReader,
-) {
+    let state = ShowState::default();
     event_bus.retain(&AppEvent::Show(state.projection_state()));
     let (tx, rx) = mpsc::channel(32);
     let (lockout_tx, lockout_rx) = watch::channel(state.lockout());
@@ -195,14 +184,12 @@ async fn run_show_actor(
                     };
                     match command {
                         ShowCommand::CurrentSessionState { reply } => {
-                            let persisted_session_revision =
-                                event_bus.persisted_session_revision();
                             operation.dirty_during_wait |= drain_available_show_events(
                                 &mut events,
                                 &mut state,
                                 &event_bus,
                             );
-                            let _ = reply.send(state.session_state(persisted_session_revision));
+                            let _ = reply.send(state.session_state());
                         }
                         ShowCommand::CurrentShowFilePath { reply } => {
                             let _ = reply.send(state.current_show_file_path());
@@ -242,9 +229,8 @@ async fn run_show_actor(
                 command = rx.recv() => {
                     let Some(command) = command else { break; };
                     if let ShowCommand::CurrentSessionState { reply } = command {
-                        let persisted_session_revision = event_bus.persisted_session_revision();
                         drain_available_show_events(&mut events, &mut state, &event_bus);
-                        let _ = reply.send(state.session_state(persisted_session_revision));
+                        let _ = reply.send(state.session_state());
                     } else {
                         pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
                         publish_lockout_if_changed(&lockout_tx, &state);
@@ -261,11 +247,9 @@ async fn run_show_actor(
 }
 
 /// @cc [owner:mixxorz,label:persistence;ordering] session-state-query-observes-published-edits
-/// Before replying to `CurrentSessionState`, Show MUST capture the shared owner-side persisted
-/// revision, then consume every already-queued event-bus fact and apply persisted-edit dirtying.
-/// Capturing first ensures a fact published during or after the drain makes the reply stale at the
-/// UI rather than pairing an unconsumed edit's revision with clean state. This drain MUST use only
-/// non-blocking receives so lifecycle commands and pending persistence completion remain responsive.
+/// Before replying to `CurrentSessionState`, Show MUST consume already-queued event-bus facts
+/// and apply persisted-edit dirtying. This drain MUST use only non-blocking receives so lifecycle
+/// commands and pending persistence completion remain responsive.
 fn drain_available_show_events(
     events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     state: &mut ShowState,
@@ -412,10 +396,8 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
  * load, and new-from-template MUST require a connected, generation-current LV1 snapshot with an
  * authoritative scene list and replace both documents before updating Show metadata. Any
  * pre-commit read, validation, write, or replacement error MUST be returned without reporting
- * success or applying the corresponding Show metadata transition. Guarded new, open, and template
- * operations MUST carry their expected owner-side revision through all asynchronous preparation to
- * Scenes' atomic replacement admission. New-from-template MUST use the load validation and
- * reconciliation path while leaving the committed show without a backing path.
+ * success or applying the corresponding Show metadata transition. New-from-template MUST use the
+ * load validation and reconciliation path while leaving the committed show without a backing path.
  */
 async fn handle_command(
     command: ShowCommand,
@@ -426,7 +408,7 @@ async fn handle_command(
 ) -> Option<PendingShowOperation> {
     match command {
         ShowCommand::CurrentSessionState { reply } => {
-            let _ = reply.send(state.session_state(event_bus.persisted_session_revision()));
+            let _ = reply.send(state.session_state());
         }
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
@@ -436,26 +418,13 @@ async fn handle_command(
         }
         ShowCommand::SetLockout { enabled, reply } => {
             let changed = state.set_lockout(enabled);
-            if changed {
-                event_bus.note_persisted_session_edit();
-            }
             publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
-            return Some(pending_new_show(peers.clone(), None, reply));
-        }
-        ShowCommand::GuardedNewShowFileFromCurrentLv1 {
-            expected_persisted_revision,
-            reply,
-        } => {
-            return Some(pending_new_show(
-                peers.clone(),
-                Some(expected_persisted_revision),
-                reply,
-            ));
+            return Some(pending_new_show(peers.clone(), reply));
         }
         ShowCommand::NewShowFileFromTemplate { path, reply } => {
             let peers = peers.clone();
@@ -476,40 +445,6 @@ async fn handle_command(
                             imported,
                             &lv1,
                             expected_generation,
-                            None,
-                        )
-                        .await
-                    }
-                    .await;
-                    PendingShowCompletion::NewFromTemplate { result, reply }
-                }),
-                dirty_during_wait: false,
-            });
-        }
-        ShowCommand::GuardedNewShowFileFromTemplate {
-            path,
-            expected_persisted_revision,
-            reply,
-        } => {
-            let peers = peers.clone();
-            return Some(PendingShowOperation {
-                future: Box::pin(async move {
-                    let result = async {
-                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
-                        let read_path = path;
-                        let lv1_for_import = lv1.clone();
-                        let imported = tokio::task::spawn_blocking(move || {
-                            load_show_file_for_lv1(&read_path, &lv1_for_import)
-                        })
-                        .await
-                        .map_err(|error| format!("Session template load task failed: {error}"))??;
-                        prepare_load_show_file(
-                            &peers,
-                            ShowFileLoadKind::NewFromTemplate,
-                            imported,
-                            &lv1,
-                            expected_generation,
-                            Some(expected_persisted_revision),
                         )
                         .await
                     }
@@ -589,40 +524,6 @@ async fn handle_command(
                             imported,
                             &lv1,
                             expected_generation,
-                            None,
-                        )
-                        .await
-                    }
-                    .await;
-                    PendingShowCompletion::Load { result, reply }
-                }),
-                dirty_during_wait: false,
-            });
-        }
-        ShowCommand::GuardedLoadShowFileFromPath {
-            path,
-            expected_persisted_revision,
-            reply,
-        } => {
-            let peers = peers.clone();
-            return Some(PendingShowOperation {
-                future: Box::pin(async move {
-                    let result = async {
-                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
-                        let read_path = path.clone();
-                        let lv1_for_import = lv1.clone();
-                        let imported = tokio::task::spawn_blocking(move || {
-                            load_show_file_for_lv1(&read_path, &lv1_for_import)
-                        })
-                        .await
-                        .map_err(|error| format!("Session load task failed: {error}"))??;
-                        prepare_load_show_file(
-                            &peers,
-                            ShowFileLoadKind::Open(path),
-                            imported,
-                            &lv1,
-                            expected_generation,
-                            Some(expected_persisted_revision),
                         )
                         .await
                     }
@@ -638,7 +539,6 @@ async fn handle_command(
 
 fn pending_new_show(
     peers: ShowActorPeers,
-    expected_persisted_revision: Option<u64>,
     reply: Option<tokio::sync::oneshot::Sender<Result<NewShowFileResult, String>>>,
 ) -> PendingShowOperation {
     PendingShowOperation {
@@ -649,21 +549,19 @@ fn pending_new_show(
                     "New session blocked: LV1 scene list is not loaded".to_string()
                 })?;
                 let scene_configs = crate::scenes::align_scene_configs(Vec::new(), scene_list);
-                let selected_scene_internal_id = scene_configs
-                    .first()
-                    .map(|scene| scene.internal_scene_id.to_string());
+                let selected_scene_internal_id =
+                    scene_configs.first().map(|scene| scene.internal_scene_id);
                 validate_lv1_snapshot(&peers, expected_generation, &lv1).await?;
                 replace_session_document(
                     &peers,
                     SessionDocument {
                         scenes: SceneDocument {
                             scene_configs,
-                            selected_scene_internal_id: selected_scene_internal_id.clone(),
+                            selected_scene_internal_id,
                         },
                         cue_lists: CueListDocument::default(),
                     },
                     expected_generation,
-                    expected_persisted_revision,
                 )
                 .await?;
                 Ok(NewShowFileResult {
@@ -778,10 +676,7 @@ fn finish_prepared_load(
         lockout,
         selected_scene_internal_id,
         should_mark_dirty,
-        alignment_changed,
-        imported_scene_configs,
-        aligned_scene_configs,
-        lv1_scene_list,
+        alignment_diagnostic,
     } = prepared;
     match &load_kind {
         ShowFileLoadKind::Open(path) => {
@@ -799,16 +694,8 @@ fn finish_prepared_load(
         state.mark_dirty();
     }
     publish_state_changed(event_bus, state);
-    if alignment_changed {
-        tracing::debug!(
-            event = "session_scene_alignment",
-            "{}",
-            crate::scenes::scene_alignment_diagnostic(
-                &imported_scene_configs,
-                &aligned_scene_configs,
-                &lv1_scene_list
-            )
-        );
+    if let Some(diagnostic) = alignment_diagnostic {
+        tracing::debug!(event = "session_scene_alignment", "{diagnostic}");
     }
     match load_kind {
         ShowFileLoadKind::Open(_) => {
@@ -914,24 +801,19 @@ enum ShowFileLoadKind {
 struct PreparedLoadImport {
     saved_at: String,
     lockout: bool,
-    selected_scene_internal_id: Option<String>,
     generated_internal_scene_ids: bool,
-    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    scene_document: SceneDocument,
     imported_cue_list_snapshot: CueListDocument,
-    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
-    alignment_changed: bool,
+    alignment_diagnostic: Option<String>,
 }
 
 struct PreparedLoad {
     load_kind: ShowFileLoadKind,
     saved_at: String,
     lockout: bool,
-    selected_scene_internal_id: Option<String>,
+    selected_scene_internal_id: Option<uuid::Uuid>,
     should_mark_dirty: bool,
-    alignment_changed: bool,
-    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
-    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
-    lv1_scene_list: Vec<crate::lv1::SceneListEntry>,
+    alignment_diagnostic: Option<String>,
 }
 
 /// @cc [owner:mixxorz,label:performance;persistence] load-import-off-actor-runtime
@@ -944,22 +826,30 @@ fn load_show_file_for_lv1(
     let mut file = read_show_file(path)?;
     let imported = import_show_file(&mut file, lv1)?;
     let imported_scene_configs = imported.snapshot.scene_configs;
+    let selected_scene_internal_id = imported.snapshot.selected_scene_internal_id;
     let scene_list = lv1
         .scene_list
         .as_deref()
         .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?;
     let aligned_scene_configs =
         crate::scenes::align_scene_configs(imported_scene_configs.clone(), scene_list);
-    let alignment_changed = aligned_scene_configs != imported_scene_configs;
+    let alignment_diagnostic = (aligned_scene_configs != imported_scene_configs).then(|| {
+        crate::scenes::scene_alignment_diagnostic(
+            &imported_scene_configs,
+            &aligned_scene_configs,
+            scene_list,
+        )
+    });
     Ok(PreparedLoadImport {
         saved_at: file.saved_at,
         lockout: imported.lockout,
-        selected_scene_internal_id: imported.selected_scene_internal_id,
         generated_internal_scene_ids: imported.generated_internal_scene_ids,
-        imported_scene_configs,
+        scene_document: SceneDocument {
+            scene_configs: aligned_scene_configs,
+            selected_scene_internal_id,
+        },
         imported_cue_list_snapshot: imported.cue_list_snapshot,
-        aligned_scene_configs,
-        alignment_changed,
+        alignment_diagnostic,
     })
 }
 
@@ -969,34 +859,32 @@ async fn prepare_load_show_file(
     imported: PreparedLoadImport,
     lv1: &Lv1StateSnapshot,
     expected_generation: u64,
-    expected_persisted_revision: Option<u64>,
 ) -> Result<PreparedLoad, String> {
     let PreparedLoadImport {
         saved_at,
         lockout,
-        selected_scene_internal_id,
         generated_internal_scene_ids,
-        imported_scene_configs,
+        mut scene_document,
         imported_cue_list_snapshot,
-        aligned_scene_configs,
-        alignment_changed,
+        alignment_diagnostic,
     } = imported;
-    let mut should_mark_dirty = generated_internal_scene_ids || alignment_changed;
-    let selected_scene_internal_id = selected_scene_internal_id
+    let mut should_mark_dirty = generated_internal_scene_ids || alignment_diagnostic.is_some();
+    let selected_scene_internal_id = scene_document
+        .selected_scene_internal_id
+        .take()
         .filter(|selected| {
-            aligned_scene_configs
+            scene_document
+                .scene_configs
                 .iter()
-                .any(|scene| scene.internal_scene_id.to_string() == *selected)
+                .any(|scene| scene.internal_scene_id == *selected)
         })
         .or_else(|| {
-            aligned_scene_configs
+            scene_document
+                .scene_configs
                 .first()
-                .map(|scene| scene.internal_scene_id.to_string())
+                .map(|scene| scene.internal_scene_id)
         });
-    let scene_document = SceneDocument {
-        scene_configs: aligned_scene_configs.clone(),
-        selected_scene_internal_id: selected_scene_internal_id.clone(),
-    };
+    scene_document.selected_scene_internal_id = selected_scene_internal_id;
     validate_lv1_snapshot(peers, expected_generation, lv1).await?;
     let committed = replace_session_document(
         peers,
@@ -1005,7 +893,6 @@ async fn prepare_load_show_file(
             cue_lists: imported_cue_list_snapshot.clone(),
         },
         expected_generation,
-        expected_persisted_revision,
     )
     .await?;
     should_mark_dirty |= committed.cue_lists != imported_cue_list_snapshot;
@@ -1015,13 +902,7 @@ async fn prepare_load_show_file(
         lockout,
         selected_scene_internal_id,
         should_mark_dirty,
-        alignment_changed,
-        imported_scene_configs,
-        aligned_scene_configs,
-        lv1_scene_list: lv1
-            .scene_list
-            .clone()
-            .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?,
+        alignment_diagnostic,
     })
 }
 
@@ -1050,31 +931,21 @@ async fn current_session_document(peers: &ShowActorPeers) -> Result<SessionDocum
 /// @cc [owner:mixxorz,label:persistence] replacement-timeout-serialization
 /// Session replacement MUST use a single `SessionReplacement` ticket: a timeout or closed reply MUST
 /// cancel an uncommitted replacement, while a replacement already committed by Scenes MUST still be
-/// returned as success. Show MUST NOT attempt rollback or a compensating replacement. A guarded
-/// replacement MUST preserve its exact expected persisted revision through mailbox admission.
+/// returned as success. Show MUST NOT attempt rollback or a compensating replacement.
 async fn replace_session_document(
     peers: &ShowActorPeers,
     document: SessionDocument,
     expected_generation: u64,
-    expected_persisted_revision: Option<u64>,
 ) -> Result<SessionDocument, String> {
     let scenes = peers
         .scenes()
         .ok_or_else(|| "Show blocked: scenes state is unavailable".to_string())?;
     let replacement = SessionReplacement::new(document);
     let (reply, response) = tokio::sync::oneshot::channel();
-    let command = match expected_persisted_revision {
-        Some(expected_persisted_revision) => ScenesCommand::GuardedReplaceSessionDocument {
-            replacement: replacement.clone(),
-            expected_generation,
-            expected_persisted_revision,
-            reply,
-        },
-        None => ScenesCommand::ReplaceSessionDocument {
-            replacement: replacement.clone(),
-            expected_generation,
-            reply,
-        },
+    let command = ScenesCommand::ReplaceSessionDocument {
+        replacement: replacement.clone(),
+        expected_generation,
+        reply,
     };
     tokio::time::timeout(SHOW_LOCAL_ACTOR_TIMEOUT, scenes.send(command))
         .await
@@ -1243,22 +1114,6 @@ mod tests {
         response.await.unwrap()
     }
 
-    async fn guarded_load_show(
-        show: &ShowStateHandle,
-        path: std::path::PathBuf,
-        expected_persisted_revision: u64,
-    ) -> Result<crate::show::LoadShowFileResult, String> {
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::GuardedLoadShowFileFromPath {
-            path,
-            expected_persisted_revision,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-        response.await.unwrap()
-    }
-
     async fn new_show_from_template(
         show: &ShowStateHandle,
         path: std::path::PathBuf,
@@ -1266,22 +1121,6 @@ mod tests {
         let (reply, response) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::NewShowFileFromTemplate {
             path,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-        response.await.unwrap()
-    }
-
-    async fn guarded_new_show_from_template(
-        show: &ShowStateHandle,
-        path: std::path::PathBuf,
-        expected_persisted_revision: u64,
-    ) -> Result<crate::show::NewShowFileResult, String> {
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::GuardedNewShowFileFromTemplate {
-            path,
-            expected_persisted_revision,
             reply: Some(reply),
         })
         .await
@@ -1306,14 +1145,6 @@ mod tests {
             let state = response.await.unwrap();
             assert!(state.show_file_dirty);
         }
-    }
-
-    async fn settle_show_persisted_events(show: &ShowStateHandle) {
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::CurrentSessionState { reply })
-            .await
-            .unwrap();
-        response.await.unwrap();
     }
 
     async fn current_show_state(
@@ -1429,43 +1260,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_current_connection_publishes_metadata_state_change() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let (show, _peers) = show_actor(event_bus);
-        let identity = crate::connection_state::Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1".to_string()),
-            address: "127.0.0.1".to_string(),
-            port: 50_000,
-        };
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
-            identity: Some(identity),
-            expected_generation: 0,
-            reply,
-        })
-        .await
-        .unwrap();
-        assert!(response.await.unwrap().changed);
-        let _ = events.recv().await.unwrap();
-
-        let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
-            identity: None,
-            expected_generation: 0,
-            reply,
-        })
-        .await
-        .unwrap();
-        assert!(response.await.unwrap().changed);
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            crate::runtime::events::AppEvent::Show(state) if state.connected_lv1_identity.is_none()
-        ));
-    }
-
-    #[tokio::test]
     async fn new_show_rejects_lv1_change_before_mutating_documents() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus);
@@ -1507,106 +1301,6 @@ mod tests {
             get_cue_list_document(&cue_lists).await,
             CueListDocument::default()
         );
-    }
-
-    #[tokio::test]
-    async fn guarded_open_rejects_picker_delayed_revision_and_preserves_session() {
-        let event_bus = AppEventBus::default();
-        let expected_revision = event_bus.persisted_session_revision();
-        let snapshot = lv1_snapshot(vec![SceneListEntry {
-            index: 1,
-            name: "Intro".to_string(),
-        }]);
-        let (show, _peers, scenes, cue_lists) = load_fixture(event_bus.clone(), snapshot, false);
-        let path = write_test_show(
-            "guarded-stale-open",
-            &show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 0))]),
-        );
-        let (reply, response) = tokio::sync::oneshot::channel();
-        cue_lists
-            .send(CueListsCommand::CreateCueList {
-                name: "Current cues".to_string(),
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        response.await.unwrap().unwrap();
-        let current_document = get_cue_list_document(&cue_lists).await;
-        settle_show_persisted_events(&show).await;
-        let current_show = current_show_state(&show).await;
-
-        let error = guarded_load_show(&show, path.clone(), expected_revision)
-            .await
-            .unwrap_err();
-
-        assert!(error.contains("current session changed"));
-        assert!(get_scene_document(&scenes).await.scene_configs.is_empty());
-        assert_eq!(get_cue_list_document(&cue_lists).await, current_document);
-        assert_eq!(current_show_state(&show).await, current_show);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn guarded_template_rejects_picker_delayed_revision() {
-        let event_bus = AppEventBus::default();
-        let expected_revision = event_bus.persisted_session_revision();
-        let snapshot = lv1_snapshot(vec![SceneListEntry {
-            index: 1,
-            name: "Intro".to_string(),
-        }]);
-        let (show, _peers, scenes, cue_lists) = load_fixture(event_bus.clone(), snapshot, false);
-        let path = write_test_show(
-            "guarded-stale-template",
-            &show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 0))]),
-        );
-        let (reply, response) = tokio::sync::oneshot::channel();
-        cue_lists
-            .send(CueListsCommand::CreateCueList {
-                name: "Current cues".to_string(),
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        response.await.unwrap().unwrap();
-        let current_document = get_cue_list_document(&cue_lists).await;
-        settle_show_persisted_events(&show).await;
-        let current_show = current_show_state(&show).await;
-
-        let error = guarded_new_show_from_template(&show, path.clone(), expected_revision)
-            .await
-            .unwrap_err();
-
-        assert!(error.contains("current session changed"));
-        assert!(get_scene_document(&scenes).await.scene_configs.is_empty());
-        assert_eq!(get_cue_list_document(&cue_lists).await, current_document);
-        assert_eq!(current_show_state(&show).await, current_show);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn guarded_open_commits_when_revision_matches() {
-        let event_bus = AppEventBus::default();
-        let expected_revision = event_bus.persisted_session_revision();
-        let snapshot = lv1_snapshot(vec![SceneListEntry {
-            index: 1,
-            name: "Intro".to_string(),
-        }]);
-        let (show, _peers, scenes, _cue_lists) = load_fixture(event_bus, snapshot, false);
-        let path = write_test_show(
-            "guarded-matching-open",
-            &show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 0))]),
-        );
-
-        guarded_load_show(&show, path.clone(), expected_revision)
-            .await
-            .unwrap();
-
-        assert_eq!(get_scene_document(&scenes).await.scene_configs.len(), 1);
-        assert_eq!(
-            current_show_state(&show).await.show_file_path,
-            Some(path.clone())
-        );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
@@ -1699,10 +1393,7 @@ mod tests {
             .await
             .expect("template should load");
 
-        assert_eq!(
-            result.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
-        );
+        assert_eq!(result.selected_scene_internal_id, Some(Uuid::from_u128(1)));
         assert_eq!(
             get_scene_document(&scenes).await.scene_configs[0].duration_ms,
             2_500
@@ -1793,10 +1484,7 @@ mod tests {
         assert_eq!(document.scene_configs[1].scene_index, Some(2));
         assert_eq!(document.scene_configs[1].scene_name, "Verse");
         assert_eq!(document.scene_configs[1].duration_ms, 0);
-        assert_eq!(
-            result.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
-        );
+        assert_eq!(result.selected_scene_internal_id, Some(Uuid::from_u128(1)));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1886,10 +1574,8 @@ mod tests {
             .expect("load should succeed");
 
         assert!(current_show_state(&show).await.show_file_dirty);
-        assert_eq!(
-            get_scene_document(&scenes).await.scene_configs[0].scene_index,
-            Some(2)
-        );
+        let document = get_scene_document(&scenes).await;
+        assert_eq!(document.scene_configs[0].scene_index, Some(2));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2145,7 +1831,7 @@ mod tests {
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
         assert_eq!(
             scene_document.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
+            Some(Uuid::from_u128(1))
         );
     }
 
@@ -2355,11 +2041,7 @@ mod tests {
         let scene_document = get_scene_document(&scenes).await;
         assert_eq!(scene_document.scene_configs.len(), 2);
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
-        let selected_scene_internal_id = Some(
-            scene_document.scene_configs[0]
-                .internal_scene_id
-                .to_string(),
-        );
+        let selected_scene_internal_id = Some(scene_document.scene_configs[0].internal_scene_id);
         assert_eq!(
             scene_document.selected_scene_internal_id,
             selected_scene_internal_id
@@ -2420,26 +2102,6 @@ mod tests {
             .unwrap();
         assert!(outcome.accepted);
         assert!(outcome.changed);
-    }
-
-    #[tokio::test]
-    async fn lockout_revision_advances_once_only_when_value_changes() {
-        let event_bus = AppEventBus::default();
-        let (show, task, _peers, _lockout) = build_show_actor(event_bus.clone());
-        task.spawn();
-
-        for enabled in [true, true] {
-            let (reply, response) = tokio::sync::oneshot::channel();
-            show.send(ShowCommand::SetLockout {
-                enabled,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-            response.await.unwrap();
-        }
-
-        assert_eq!(event_bus.persisted_session_revision(), 1);
     }
 
     #[tokio::test]

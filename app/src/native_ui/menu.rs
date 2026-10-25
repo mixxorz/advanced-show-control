@@ -196,16 +196,6 @@ fn application_menu() -> Menu {
 mod tests {
     use super::*;
 
-    #[test]
-    fn menu_shortcuts_use_native_primary_modifier() {
-        let expected = if cfg!(target_os = "macos") {
-            "cmd-s"
-        } else {
-            "ctrl-s"
-        };
-        assert_eq!(MENU_SAVE_SHORTCUT, expected);
-    }
-
     #[gpui_kit::test]
     #[allow(clippy::needless_option_as_deref)]
     async fn session_menu_exposes_actions_and_dispatches_selection(

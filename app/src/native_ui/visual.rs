@@ -109,7 +109,6 @@ mod macos {
                 go_submissions.borrow_mut().start(
                     u64::MAX,
                     0,
-                    0,
                     Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
                 );
                 let scenes =
@@ -760,7 +759,7 @@ mod macos {
         let mut unlinked = scene_config(unlinked_id, 0, "Imported Fade", 2_000);
         unlinked.scene_index = None;
         overwrite_state.scene_configs.push(unlinked);
-        overwrite_state.selected_scene_internal_id = Some(unlinked_id.to_string());
+        overwrite_state.selected_scene_internal_id = Some(unlinked_id);
         ui_events
             .send(UiEvent::Snapshot(Box::new(overwrite_state)))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
@@ -1391,10 +1390,10 @@ mod macos {
                     },
                 ],
             }],
-            active_cue_list_id: Some(list_id.to_string()),
-            current_cue_entry_id: Some(current_entry_id.to_string()),
-            cued_cue_entry_id: Some(next_entry_id.to_string()),
-            selected_scene_internal_id: Some(scene_a.to_string()),
+            active_cue_list_id: Some(list_id),
+            current_cue_entry_id: Some(current_entry_id),
+            cued_cue_entry_id: Some(next_entry_id),
+            selected_scene_internal_id: Some(scene_a),
             show_file_name: "Visual Reference.ascs".into(),
             show_file_dirty: lockout,
             logs: vec![AppLogEntry {
@@ -1705,9 +1704,9 @@ fn gallery_snapshot(state_version: u64, lockout: bool) -> crate::projector::AppV
                 scene_internal_id: scene_b,
             }],
         }],
-        active_cue_list_id: Some(list_id.to_string()),
-        cued_cue_entry_id: Some(entry_id.to_string()),
-        selected_scene_internal_id: Some(scene_a.to_string()),
+        active_cue_list_id: Some(list_id),
+        cued_cue_entry_id: Some(entry_id),
+        selected_scene_internal_id: Some(scene_a),
         show_file_name: "Component Gallery.ascs".into(),
         show_file_dirty: lockout,
         logs: vec![AppLogEntry {

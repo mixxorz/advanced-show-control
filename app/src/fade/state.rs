@@ -12,7 +12,6 @@ use crate::runtime::events::AppEventBus;
 pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
 
 struct ReadinessBarrier {
-    generation: u64,
     scene_index: i32,
     scene_name: String,
     last_counted_ping_sequence: u64,
@@ -89,7 +88,6 @@ impl EngineState {
     /// readiness time MUST NOT advance target interpolation.
     pub(super) fn start_or_reset_readiness(
         &mut self,
-        generation: u64,
         scene_index: i32,
         scene_name: String,
         ping_sequence: u64,
@@ -112,7 +110,6 @@ impl EngineState {
         }
 
         self.readiness_barrier = Some(ReadinessBarrier {
-            generation,
             scene_index,
             scene_name,
             last_counted_ping_sequence: ping_sequence,
@@ -151,7 +148,7 @@ impl EngineState {
 
         if now >= barrier.deadline
             || barrier.missed_events
-            || generation != barrier.generation
+            || generation != self.generation
             || sequence <= barrier.last_counted_ping_sequence
         {
             return PingGateProgress::Ignored;
@@ -191,7 +188,7 @@ impl EngineState {
     pub(super) fn timeout_readiness(&mut self) -> Option<ReadinessTimeoutContext> {
         self.readiness_barrier.take().map(|barrier| {
             let context = ReadinessTimeoutContext {
-                generation: barrier.generation,
+                generation: self.generation,
                 scene_index: barrier.scene_index,
                 scene_name: barrier.scene_name.clone(),
                 observed_ping_count: barrier.observed_ping_count,

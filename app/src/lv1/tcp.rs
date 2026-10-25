@@ -98,7 +98,7 @@ pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError>
 }
 
 fn log_osc_message(direction: &'static str, address: &str) {
-    if is_noisy_osc_log_address(address) {
+    if matches!(address, "/ping" | "/pong" | "/Notify/TempoBlink") {
         return;
     }
 
@@ -108,10 +108,6 @@ fn log_osc_message(direction: &'static str, address: &str) {
         osc_address = address,
         "{address}"
     );
-}
-
-fn is_noisy_osc_log_address(address: &str) -> bool {
-    matches!(address, "/ping" | "/pong" | "/Notify/TempoBlink")
 }
 
 /// @cc [owner:mixxorz,label:protocol;safety] parameter-write-mapping-and-order
@@ -191,10 +187,10 @@ impl Lv1TcpClient {
 
     pub async fn register_myfoh(&mut self, device_name: &str, uuid: &str) -> TcpResult<()> {
         let writer = self.writer.as_mut().ok_or_else(|| {
-            Box::new(std::io::Error::new(
+            std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "LV1 TCP writer is not available",
-            )) as Box<dyn std::error::Error + Send + Sync>
+            )
         })?;
 
         send_bytes(writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
@@ -203,10 +199,10 @@ impl Lv1TcpClient {
     pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
         let frame = encode_frame(address, args)?;
         let writer = self.writer.as_mut().ok_or_else(|| {
-            Box::new(std::io::Error::new(
+            std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "LV1 TCP writer is not available",
-            )) as Box<dyn std::error::Error + Send + Sync>
+            )
         })?;
 
         send_bytes(writer, &frame).await
@@ -241,14 +237,15 @@ pub(crate) async fn read_next_async(
     use tokio::io::AsyncReadExt;
 
     let mut buf = [0_u8; 8192];
-    match reader.read(&mut buf).await {
-        Ok(0) => Err(Box::new(std::io::Error::new(
+    let size = reader.read(&mut buf).await?;
+    if size == 0 {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "LV1 TCP connection closed",
-        ))),
-        Ok(size) => Ok(decoder.push(&buf[..size])?),
-        Err(err) => Err(Box::new(err)),
+        )
+        .into());
     }
+    Ok(decoder.push(&buf[..size])?)
 }
 
 #[cfg(test)]
@@ -371,24 +368,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_lv1_frame_header_before_waiting_for_payload() {
+    fn rejects_invalid_lv1_frame_header_with_or_without_payload() {
+        let invalid_header = [0, 0, 0, 3, 0, 0, 0, 0];
         let mut prefix = Vec::new();
         prefix.extend_from_slice(&1024_u32.to_be_bytes());
-        prefix.extend_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
+        prefix.extend_from_slice(&invalid_header);
+        let mut complete_frame = encode_frame("/ping", &[]).unwrap();
+        complete_frame[4..12].copy_from_slice(&invalid_header);
 
-        let error = FrameDecoder::default().push(&prefix).unwrap_err();
-
-        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
-    }
-
-    #[test]
-    fn rejects_invalid_lv1_frame_header() {
-        let mut bytes = encode_frame("/ping", &[]).unwrap();
-        bytes[4..12].copy_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
-
-        let error = FrameDecoder::default().push(&bytes).unwrap_err();
-
-        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
+        for (case, bytes) in [
+            ("prefix only", prefix),
+            ("complete payload", complete_frame),
+        ] {
+            let error = FrameDecoder::default().push(&bytes).unwrap_err();
+            assert!(
+                matches!(error, Lv1TcpError::InvalidHeader(header) if header == invalid_header),
+                "{case} must reject the header without waiting for more bytes"
+            );
+        }
     }
 
     #[test]

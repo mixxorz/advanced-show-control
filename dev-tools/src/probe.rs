@@ -27,9 +27,14 @@ pub struct ProbeLogEntry {
 /// remain `Other`.
 pub fn classify_message(msg: &OscMessage) -> MessageKind {
     let address = msg.address.as_str();
-    if is_fader_gain_address(address) {
+    let mut segments = address.split('/').filter(|segment| !segment.is_empty());
+    if segments.clone().next_back() == Some("Gain")
+        && segments.clone().any(|segment| segment == "Track")
+    {
         MessageKind::Fader
-    } else if is_scene_address(address) {
+    } else if segments.any(|segment| {
+        segment.eq_ignore_ascii_case("Scene") || segment.eq_ignore_ascii_case("CurrentScene")
+    }) {
         MessageKind::Scene
     } else if address == "/handshake" || address == "/device_name" {
         MessageKind::Handshake
@@ -38,23 +43,6 @@ pub fn classify_message(msg: &OscMessage) -> MessageKind {
     } else {
         MessageKind::Other
     }
-}
-
-fn is_fader_gain_address(address: &str) -> bool {
-    let segments: Vec<_> = address
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    segments.last() == Some(&"Gain") && segments.contains(&"Track")
-}
-
-fn is_scene_address(address: &str) -> bool {
-    address
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .any(|segment| {
-            segment.eq_ignore_ascii_case("Scene") || segment.eq_ignore_ascii_case("CurrentScene")
-        })
 }
 
 pub fn format_arg(arg: &OscArg) -> String {
@@ -110,13 +98,7 @@ pub fn entry_for_message(
         address: Some(msg.address.clone()),
         args: msg.args.iter().map(format_arg).collect(),
         frame_size,
-        header_hex: header.map(|bytes| {
-            bytes
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join("")
-        }),
+        header_hex: header.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
         error: None,
     }
 }
@@ -167,6 +149,32 @@ mod tests {
     }
 
     #[test]
+    fn classification_preserves_segment_boundaries_case_and_precedence() {
+        for address in ["Track/Gain", "/Track//Out/Gain///", "/Scene/Track/Gain"] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Fader);
+        }
+        for address in [
+            "/Scene",
+            "/scene",
+            "/Notify/CURRENTSCENE/",
+            "/Track/Gain/Scene",
+        ] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Scene);
+        }
+        for address in [
+            "",
+            "///",
+            "/track/Gain",
+            "/Track/gain",
+            "/SoundTrack/Gain",
+            "/CurrentScenes",
+            "/ping/",
+        ] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Other);
+        }
+    }
+
+    #[test]
     fn formats_args_for_logs() {
         assert_eq!(format_arg(&OscArg::Int(3)), "i:3");
         assert_eq!(format_arg(&OscArg::Float(1.5)), "f:1.5");
@@ -205,22 +213,60 @@ mod tests {
     }
 
     #[test]
-    fn serializes_log_entry_representation() {
-        let entry = ProbeLogEntry {
-            timestamp_ms: 12,
-            direction: "received".to_string(),
-            kind: MessageKind::Keepalive,
-            address: Some("/ping".to_string()),
-            args: vec![],
-            frame_size: Some(8),
-            header_hex: Some("0000000000000008".to_string()),
-            error: None,
-        };
+    fn logger_writes_newline_terminated_json_and_flushes_before_returning() {
+        let path = std::env::temp_dir().join(format!("lv1-probe-{}.jsonl", uuid::Uuid::new_v4()));
+        let started = std::time::Instant::now();
+        let mut logger = JsonlLogger::create(&path).unwrap();
+        logger
+            .write(ProbeLogEntry {
+                timestamp_ms: u128::MAX,
+                direction: "received".to_string(),
+                kind: MessageKind::Keepalive,
+                address: Some("/ping".to_string()),
+                args: vec![],
+                frame_size: Some(8),
+                header_hex: Some("0000000000000008".to_string()),
+                error: None,
+            })
+            .unwrap();
 
+        // Read before closing the logger so BufWriter's drop cannot hide a missing flush.
+        let first_write = std::fs::read_to_string(&path).unwrap();
+        assert!(first_write.ends_with('\n'));
+        assert_eq!(first_write.lines().count(), 1);
+        let first: serde_json::Value = serde_json::from_str(&first_write).unwrap();
+        let timestamp_ms = first["timestamp_ms"].as_u64().unwrap();
+        assert!(u128::from(timestamp_ms) <= started.elapsed().as_millis());
         assert_eq!(
-            serde_json::to_string(&entry).unwrap(),
-            r#"{"timestamp_ms":12,"direction":"received","kind":"Keepalive","address":"/ping","args":[],"frame_size":8,"header_hex":"0000000000000008","error":null}"#
+            first,
+            serde_json::json!({
+                "timestamp_ms": timestamp_ms,
+                "direction": "received",
+                "kind": "Keepalive",
+                "address": "/ping",
+                "args": [],
+                "frame_size": 8,
+                "header_hex": "0000000000000008",
+                "error": null,
+            })
         );
+
+        logger
+            .write(entry_for_message("sent", &msg("/pong"), None, None))
+            .unwrap();
+        let second_write = std::fs::read_to_string(&path).unwrap();
+        assert!(second_write.starts_with(&first_write));
+        assert!(second_write.ends_with('\n'));
+        let entries: Vec<serde_json::Value> = second_write
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], first);
+        assert_eq!(entries[1]["direction"], "sent");
+        assert_eq!(entries[1]["address"], "/pong");
+        drop(logger);
+        std::fs::remove_file(path).unwrap();
     }
 
     fn msg(address: &str) -> OscMessage {

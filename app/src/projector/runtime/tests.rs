@@ -1,8 +1,9 @@
 use super::*;
 use crate::cue_lists::{CueList, CueListDocument, CueListsProjectionState};
-use crate::lv1::Lv1Event;
-use crate::projector::LogSeverity;
-use crate::runtime::events::AppEventBus;
+use crate::fade::{FadeEvent, FadeParameter};
+use crate::lv1::{ChannelInfo, Lv1Event, SceneListEntry, SceneObservation, SceneState};
+use crate::projector::{AppConnectionState, AppFadeState, LogSeverity};
+use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::scenes::{SceneConfig, ScenesEvent, ScenesProjectionState};
 use crate::settings::{AppSettings, SettingsEvent};
 use crate::show::ShowState;
@@ -17,24 +18,11 @@ struct ProjectorTest {
 
 impl ProjectorTest {
     fn new(events: AppEventBus) -> Self {
-        Self::with_runtime_source(
-            events,
-            crate::lifecycle::AppLifecycle::default().runtime_snapshot_source(),
-        )
-    }
-
-    fn with_runtime_source(
-        events: AppEventBus,
-        runtime_source: crate::lifecycle::RuntimeSnapshotSource,
-    ) -> Self {
         let (sink, snapshots) = projection_channel();
         let (logs, log_rx) = broadcast::channel(8);
         let task = spawn_projector(ProjectorInputs {
             sink,
-            generation: 0,
             state: events.state(),
-            runtime_source,
-            events: events.subscribe(),
             logs: log_rx,
         });
         Self {
@@ -88,22 +76,73 @@ fn cue_state() -> CueListsProjectionState {
             cued_cue_entry_id: None,
         },
         current_cue_entry_id: None,
-        last_recall_status: Some("recalling".into()),
     }
 }
 
 #[tokio::test]
 async fn projector_starts_from_latest_state_even_when_published_before_subscription() {
-    let events = AppEventBus::default();
+    let events = AppEventBus::new(1);
     let AppEvent::Show(mut state) = show_event(true) else {
         unreachable!()
     };
     state.show_file_name = "Seeded Show".into();
     events.publish(AppEvent::Show(state));
+    events.publish_runtime_generation_changed(7);
+    events.publish_lv1(7, Lv1Event::Connected);
+    for (index, name) in [(1, "Earlier scene"), (2, "Latest scene")] {
+        events.publish_lv1(
+            7,
+            Lv1Event::SceneChanged(SceneObservation {
+                sequence: index as u64,
+                scene: SceneState {
+                    index,
+                    name: name.into(),
+                },
+            }),
+        );
+    }
+    events.publish_lv1(
+        7,
+        Lv1Event::SceneListChanged(vec![SceneListEntry {
+            index: 2,
+            name: "Latest scene".into(),
+        }]),
+    );
+    events.publish_lv1(
+        7,
+        Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+            group: 1,
+            channel: 2,
+            name: "Vox".into(),
+            gain_db: -5.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }]),
+    );
+    events.publish_fade(7, FadeEvent::FadeStarted);
+    for sequence in 1..8 {
+        events.publish_lv1(7, Lv1Event::PingReceived { sequence });
+        events.publish_lv1(
+            7,
+            Lv1Event::FaderChanged {
+                group: 1,
+                channel: 2,
+                gain_db: -3.0,
+            },
+        );
+    }
     let mut test = ProjectorTest::new(events);
     let snapshot = test.snapshot().await;
     assert!(snapshot.lockout);
     assert_eq!(snapshot.show_file_name, "Seeded Show");
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert_eq!(snapshot.current_scene.unwrap().name, "Latest scene");
+    assert_eq!(snapshot.scenes[0].name, "Latest scene");
+    assert_eq!(snapshot.channels[0].name, "Vox");
+    assert_eq!(snapshot.fade_state, AppFadeState::Running);
 }
 
 #[tokio::test]
@@ -128,7 +167,7 @@ async fn updates_are_retained_for_late_projection_and_survive_generation_change(
     assert_eq!(test.snapshot().await.updates, ready);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn projector_emits_ui_log_entries_from_log_input() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.logs
@@ -144,14 +183,68 @@ async fn projector_emits_ui_log_entries_from_log_input() {
             .iter()
             .any(|entry| entry.message == "projected log")
     );
+
+    // Overflow only the log input; already cached entries and retained state remain available.
+    for index in 0..16 {
+        test.logs
+            .send(UiLogEvent {
+                severity: LogSeverity::Info,
+                message: format!("burst log {index}"),
+            })
+            .unwrap();
+    }
+    test.events.publish(show_event(true));
+    let after_lag = test.snapshot().await;
+    assert!(after_lag.lockout);
+    assert_eq!(after_lag.logs.first().unwrap().message, "projected log");
+    assert_eq!(after_lag.logs.last().unwrap().message, "burst log 15");
+    assert!(after_lag.state_version > snapshot.state_version);
 }
 
 #[tokio::test(start_paused = true)]
-async fn ping_event_does_not_emit_app_status_changed() {
+async fn non_material_facts_do_not_emit_another_snapshot() {
     let mut test = ProjectorTest::new(AppEventBus::default());
+    test.events.publish_lv1(0, Lv1Event::Connected);
     test.snapshot().await;
-    test.events
-        .publish_lv1(0, Lv1Event::PingReceived { sequence: 1 });
+    for event in [
+        Lv1Event::Connected,
+        Lv1Event::PingReceived { sequence: 1 },
+        Lv1Event::FaderChanged {
+            group: 1,
+            channel: 1,
+            gain_db: -1.0,
+        },
+        Lv1Event::MuteChanged {
+            group: 1,
+            channel: 1,
+            muted: true,
+        },
+        Lv1Event::PanChanged {
+            group: 1,
+            channel: 1,
+            pan: 0.5,
+        },
+        Lv1Event::BalanceChanged {
+            group: 1,
+            channel: 1,
+            balance: 0.25,
+        },
+        Lv1Event::WidthChanged {
+            group: 1,
+            channel: 1,
+            width: 0.75,
+        },
+    ] {
+        test.events.publish_lv1(0, event);
+    }
+    test.events.publish_fade(
+        0,
+        FadeEvent::ChannelCompleted {
+            group: 1,
+            channel: 1,
+            parameter: FadeParameter::FaderDb,
+        },
+    );
     test.assert_no_snapshot().await;
 }
 
@@ -179,7 +272,7 @@ async fn scene_state_changes_are_projected() {
                     scoped_channels: vec![],
                     scope_toggles: Default::default(),
                 }],
-                selected_scene_internal_id: Some(Uuid::from_u128(1).to_string()),
+                selected_scene_internal_id: Some(Uuid::from_u128(1)),
                 ..Default::default()
             },
             persisted_scene_edit: false,
@@ -189,7 +282,7 @@ async fn scene_state_changes_are_projected() {
     assert_eq!(snapshot.scene_configs[0].scene_name, "Bridge");
     assert_eq!(
         snapshot.selected_scene_internal_id.unwrap(),
-        Uuid::from_u128(1).to_string()
+        Uuid::from_u128(1)
     );
 }
 
@@ -199,7 +292,6 @@ async fn cue_state_changes_are_projected() {
     test.events.publish(AppEvent::CueLists(cue_state()));
     let snapshot = test.snapshot().await;
     assert_eq!(snapshot.cue_lists[0].name, "Main");
-    assert_eq!(snapshot.last_cue_recall_status.unwrap(), "recalling");
 }
 
 #[tokio::test]
@@ -224,7 +316,6 @@ async fn session_replacement_projects_scenes_and_cues_together() {
     let snapshot = test.snapshot().await;
     assert!(!snapshot.scene_settings_clipboard_available);
     assert_eq!(snapshot.cue_lists[0].name, "Main");
-    assert_eq!(snapshot.session_revision, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -237,134 +328,97 @@ async fn unchanged_state_does_not_emit_another_snapshot() {
     test.assert_no_snapshot().await;
 }
 
-#[tokio::test]
-async fn bus_lag_resets_live_state_without_losing_latest_app_state() {
+#[tokio::test(start_paused = true)]
+async fn changes_before_the_next_tick_are_coalesced_into_the_latest_snapshot() {
+    let mut test = ProjectorTest::new(AppEventBus::default());
+    let first = test.snapshot().await;
+    test.events.publish(show_event(true));
+    test.events.publish(show_event(false));
+    test.events.publish(show_event(true));
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.events.publish_fade(0, FadeEvent::FadeStarted);
+
+    tokio::time::advance(PROJECTOR_INTERVAL - Duration::from_millis(1)).await;
+    tokio::select! {
+        biased;
+        _ = test.snapshots.changed() => panic!("projector must wait for its interval tick"),
+        _ = tokio::task::yield_now() => {}
+    }
+    let latest = test.snapshot().await;
+    assert_eq!(latest.state_version, first.state_version + 1);
+    assert!(latest.lockout);
+    assert_eq!(latest.connection, AppConnectionState::Connected);
+    assert_eq!(latest.fade_state, AppFadeState::Running);
+    test.assert_no_snapshot().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn operational_bus_overflow_does_not_reset_latest_display_state() {
     let mut test = ProjectorTest::new(AppEventBus::new(1));
+    let mut operational_events = test.events.subscribe();
     test.events.publish_lv1(0, Lv1Event::Connected);
     assert_eq!(
         test.snapshot().await.connection,
-        crate::projector::AppConnectionState::Connected
+        AppConnectionState::Connected
     );
     test.events.publish(show_event(true));
     test.events.publish(AppEvent::CueLists(cue_state()));
+    test.events.publish_fade(0, FadeEvent::FadeStarted);
     for sequence in 1..8 {
         test.events
             .publish_lv1(0, Lv1Event::PingReceived { sequence });
     }
+    assert!(matches!(
+        operational_events.try_recv(),
+        Err(broadcast::error::TryRecvError::Lagged(_))
+    ));
     let snapshot = test.snapshot().await;
-    assert_eq!(
-        snapshot.connection,
-        crate::projector::AppConnectionState::Disconnected
-    );
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert_eq!(snapshot.fade_state, AppFadeState::Running);
     assert!(snapshot.lockout);
     assert_eq!(snapshot.cue_lists[0].name, "Main");
 }
 
-#[tokio::test]
-async fn lag_recovery_keeps_log_input_responsive_and_replays_post_cutoff_facts() {
-    let events = AppEventBus::new(1);
-    let (lv1, mut commands) = tokio::sync::mpsc::channel(1);
-    let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
-        crate::lv1::test_actor_handle(lv1),
-    );
-    let mut test = ProjectorTest::with_runtime_source(events, runtime_source);
-    test.snapshot().await;
-
-    test.events.publish_lv1(0, Lv1Event::Connected);
-    test.events
-        .publish_lv1(0, Lv1Event::PingReceived { sequence: 1 });
-    let Some(Lv1Command::GetState { reply }) = commands.recv().await else {
-        panic!("lag recovery should request authoritative LV1 state");
-    };
-
-    test.events.publish_lv1(0, Lv1Event::Connected);
-    test.logs
-        .send(UiLogEvent {
-            severity: LogSeverity::Info,
-            message: "during recovery".into(),
-        })
-        .unwrap();
-    let snapshot = test.snapshot().await;
-    assert!(
-        snapshot
-            .logs
-            .iter()
-            .any(|log| log.message == "during recovery")
-    );
-
-    reply
-        .send(crate::lv1::Lv1StateSnapshot {
-            connection: ConnectionStatus::Disconnected,
-            scene: None,
-            scene_list: None,
-            channels: vec![],
-            ping_sequence: 0,
-        })
-        .unwrap();
-    let snapshot = test.snapshot().await;
-    assert_eq!(
-        snapshot.connection,
-        crate::projector::AppConnectionState::Connected
-    );
-}
-
-#[test]
-fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
-    let mut cache = ProjectionCache::new();
-    cache.set_active_generation(1);
-    let result = ProjectorRecoveryResult {
-        generation: Some(1),
-        snapshot: Some((
-            1,
-            crate::lv1::Lv1StateSnapshot {
-                connection: ConnectionStatus::Connected,
-                scene: None,
-                scene_list: vec![].into(),
-                channels: vec![],
-                ping_sequence: 0,
-            },
-        )),
-        timed_out: false,
-    };
-
-    apply_recovery_result(&mut cache, result, 2);
-
-    let snapshot = cache.build_snapshot(&Default::default());
-    assert_eq!(
-        snapshot.connection,
-        crate::projector::AppConnectionState::Disconnected
-    );
-}
-
-#[tokio::test]
-async fn recovery_queue_overflow_establishes_a_new_cutoff() {
-    let runtime_source = crate::lifecycle::AppLifecycle::default().runtime_snapshot_source();
-    let mut pending = start_projector_recovery(runtime_source);
-    for sequence in 0..=MAX_PENDING_RECOVERY_EVENTS as u64 {
-        pending.push_event(AppEvent::Lv1 {
-            generation: 0,
-            event: Lv1Event::PingReceived { sequence },
-        });
-    }
-
-    assert!(pending.restart_required);
-    assert_eq!(pending.queued_events.len(), 1);
-}
-
 #[tokio::test(start_paused = true)]
-async fn recovery_timeout_returns_disconnected_fallback() {
-    let (lv1, _commands) = tokio::sync::mpsc::channel(1);
-    let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
-        crate::lv1::test_actor_handle(lv1),
+async fn generation_changes_clear_live_display_and_ignore_stale_facts() {
+    let mut test = ProjectorTest::new(AppEventBus::default());
+    test.events.publish(show_event(true));
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.events.publish_lv1(
+        0,
+        Lv1Event::SceneChanged(SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 2,
+                name: "Previous generation".into(),
+            },
+        }),
     );
-    let recovery = tokio::spawn(recover_projector_after_lag(runtime_source));
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_millis(501)).await;
+    test.events.publish_fade(0, FadeEvent::FadeStarted);
+    let before = test.snapshot().await;
+    assert_eq!(before.connection, AppConnectionState::Connected);
+    assert_eq!(before.fade_state, AppFadeState::Running);
 
-    let result = recovery.await.unwrap();
-    assert!(result.timed_out);
-    assert_eq!(result.generation, Some(0));
-    assert!(result.snapshot.is_none());
+    test.events.publish_runtime_generation_changed(1);
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.events.publish_fade(0, FadeEvent::FadeStarted);
+    let after = test.snapshot().await;
+    assert_eq!(after.connection, AppConnectionState::Disconnected);
+    assert!(after.current_scene.is_none());
+    assert!(after.scenes.is_empty());
+    assert!(after.channels.is_empty());
+    assert_eq!(after.fade_state, AppFadeState::Idle);
+    assert!(after.lockout);
+    assert!(after.state_version > before.state_version);
+
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.events.publish_fade(0, FadeEvent::FadeStarted);
+    test.assert_no_snapshot().await;
+    test.events.publish_lv1(1, Lv1Event::Connected);
+    assert_eq!(
+        test.snapshot().await.connection,
+        AppConnectionState::Connected
+    );
 }
 
 #[tokio::test]

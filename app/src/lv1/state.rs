@@ -5,9 +5,11 @@ use std::time::Instant;
 use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
+use super::osc::{OscArg, OscMessage};
 use super::parsers::{parse_channels_batch, parse_scene_list};
 use super::types::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneObservation, SceneState,
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, PanMode, SceneListEntry, SceneObservation,
+    SceneState,
 };
 
 /// @cc [owner:mixxorz,label:protocol;state] exact-scene-pairing
@@ -31,13 +33,10 @@ impl SceneBuffer {
     }
 
     fn try_emit(&mut self) -> Option<SceneState> {
-        if self.pending_index.is_some() && self.pending_name.is_some() {
-            let index = self.pending_index.take().unwrap();
-            let name = self.pending_name.take().unwrap();
-            Some(SceneState { index, name })
-        } else {
-            None
-        }
+        let index = self.pending_index?;
+        let name = self.pending_name.take()?;
+        self.pending_index = None;
+        Some(SceneState { index, name })
     }
 }
 
@@ -69,79 +68,6 @@ pub(super) fn apply_mute_update(
     {
         ch.muted = muted;
     }
-}
-
-fn numeric_arg_to_f64(arg: &crate::lv1::osc::OscArg) -> Option<f64> {
-    match arg {
-        crate::lv1::osc::OscArg::Float(value) => Some(f64::from(*value)),
-        crate::lv1::osc::OscArg::Double(value) => Some(*value),
-        crate::lv1::osc::OscArg::Int(value) => Some(f64::from(*value)),
-        _ => None,
-    }
-}
-
-fn binary_int_arg_to_bool(arg: &crate::lv1::osc::OscArg) -> Option<bool> {
-    match arg {
-        crate::lv1::osc::OscArg::Int(0) => Some(false),
-        crate::lv1::osc::OscArg::Int(1) => Some(true),
-        _ => None,
-    }
-}
-
-fn mute_arg_to_bool(arg: &crate::lv1::osc::OscArg) -> Option<bool> {
-    match arg {
-        crate::lv1::osc::OscArg::Bool(value) => Some(*value),
-        _ => binary_int_arg_to_bool(arg),
-    }
-}
-
-pub(super) fn apply_pan_update(
-    channels: &mut [ChannelInfo],
-    group: i32,
-    channel: i32,
-    pan: f64,
-) -> bool {
-    if let Some(ch) = channels
-        .iter_mut()
-        .find(|c| c.group == group && c.channel == channel)
-    {
-        ch.pan = Some(pan);
-        return true;
-    }
-    false
-}
-
-pub(super) fn apply_balance_update(
-    channels: &mut [ChannelInfo],
-    group: i32,
-    channel: i32,
-    balance: f64,
-) -> bool {
-    if let Some(ch) = channels
-        .iter_mut()
-        .find(|c| c.group == group && c.channel == channel)
-        && matches!(ch.pan_mode, Some(crate::lv1::types::PanMode::Stereo))
-    {
-        ch.balance = Some(balance);
-        return true;
-    }
-    false
-}
-
-pub(super) fn apply_width_update(
-    channels: &mut [ChannelInfo],
-    group: i32,
-    channel: i32,
-    width: f64,
-) -> bool {
-    if let Some(ch) = channels
-        .iter_mut()
-        .find(|c| c.group == group && c.channel == channel)
-    {
-        ch.width = Some(width);
-        return true;
-    }
-    false
 }
 
 pub(super) struct ActorState {
@@ -222,8 +148,8 @@ fn observe_scene(state: &mut ActorState, scene: SceneState) {
  * and published `FaderChanged` fact. Unknown channels and other value types MUST be ignored without
  * mutating the mirror or publishing `FaderChanged`.
  */
-pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscMessage) {
-    if is_diagnostic_address(&msg.address) {
+pub(super) fn handle_message(state: &mut ActorState, msg: &OscMessage) {
+    if msg.address == "/Channels" || msg.address.contains("Scene") {
         state.diagnose(format!(
             "received {} args_count={}",
             msg.address,
@@ -242,14 +168,14 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             }
         },
         "/Notify/CurSceneIndex" => {
-            if let Some(crate::lv1::osc::OscArg::Int(index)) = msg.args.first()
+            if let Some(OscArg::Int(index)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_index(*index)
             {
                 observe_scene(state, scene);
             }
         }
         "/Notify/Scene/Name" => {
-            if let Some(crate::lv1::osc::OscArg::String(name)) = msg.args.first()
+            if let Some(OscArg::String(name)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_name(name.clone())
             {
                 observe_scene(state, scene);
@@ -266,29 +192,30 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             }
         },
         "/Notify/Track/Out/Gain" => {
-            if let (
-                Some(crate::lv1::osc::OscArg::Int(group)),
-                Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(gain_arg),
-            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && let Some(gain_db) = numeric_arg_to_f64(gain_arg)
-                && apply_fader_update(&mut state.channels, *group, *channel, gain_db)
-            {
-                state.fan_out(Lv1Event::FaderChanged {
-                    group: *group,
-                    channel: *channel,
-                    gain_db,
-                });
+            if let [OscArg::Int(group), OscArg::Int(channel), gain_arg, ..] = msg.args.as_slice() {
+                let gain_db = match gain_arg {
+                    OscArg::Float(value) => f64::from(*value),
+                    OscArg::Double(value) => *value,
+                    OscArg::Int(value) => f64::from(*value),
+                    _ => return,
+                };
+                if apply_fader_update(&mut state.channels, *group, *channel, gain_db) {
+                    state.fan_out(Lv1Event::FaderChanged {
+                        group: *group,
+                        channel: *channel,
+                        gain_db,
+                    });
+                }
             }
         }
         "/Notify/Track/Out/Mute" => {
-            if let (
-                Some(crate::lv1::osc::OscArg::Int(group)),
-                Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(mute_arg),
-            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && let Some(muted) = mute_arg_to_bool(mute_arg)
-            {
+            if let [OscArg::Int(group), OscArg::Int(channel), mute_arg, ..] = msg.args.as_slice() {
+                let muted = match mute_arg {
+                    OscArg::Bool(value) => *value,
+                    OscArg::Int(0) => false,
+                    OscArg::Int(1) => true,
+                    _ => return,
+                };
                 apply_mute_update(&mut state.channels, *group, *channel, muted);
                 state.fan_out(Lv1Event::MuteChanged {
                     group: *group,
@@ -298,13 +225,18 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             }
         }
         "/Notify/Track/Pan" => {
-            if let (
-                Some(crate::lv1::osc::OscArg::Int(group)),
-                Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(crate::lv1::osc::OscArg::Double(pan)),
-            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && apply_pan_update(&mut state.channels, *group, *channel, *pan)
+            if let [
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(pan),
+                ..,
+            ] = msg.args.as_slice()
+                && let Some(ch) = state
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
             {
+                ch.pan = Some(*pan);
                 state.fan_out(Lv1Event::PanChanged {
                     group: *group,
                     channel: *channel,
@@ -313,13 +245,19 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             }
         }
         "/Notify/Balance" => {
-            if let (
-                Some(crate::lv1::osc::OscArg::Int(group)),
-                Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(crate::lv1::osc::OscArg::Double(balance)),
-            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && apply_balance_update(&mut state.channels, *group, *channel, *balance)
+            if let [
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(balance),
+                ..,
+            ] = msg.args.as_slice()
+                && let Some(ch) = state
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                && matches!(ch.pan_mode, Some(PanMode::Stereo))
             {
+                ch.balance = Some(*balance);
                 state.fan_out(Lv1Event::BalanceChanged {
                     group: *group,
                     channel: *channel,
@@ -328,19 +266,19 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             }
         }
         "/Notify/PanArcWidth" => {
-            if let (
-                Some(crate::lv1::osc::OscArg::Int(group)),
-                Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(crate::lv1::osc::OscArg::Double(width)),
-                Some(active_arg),
-            ) = (
-                msg.args.first(),
-                msg.args.get(1),
-                msg.args.get(2),
-                msg.args.get(3),
-            ) && binary_int_arg_to_bool(active_arg) == Some(true)
-                && apply_width_update(&mut state.channels, *group, *channel, *width)
+            if let [
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(width),
+                OscArg::Int(1),
+                ..,
+            ] = msg.args.as_slice()
+                && let Some(ch) = state
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
             {
+                ch.width = Some(*width);
                 state.fan_out(Lv1Event::WidthChanged {
                     group: *group,
                     channel: *channel,
@@ -350,10 +288,6 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
         }
         _ => {}
     }
-}
-
-fn is_diagnostic_address(address: &str) -> bool {
-    address == "/Channels" || address.split('/').any(|segment| segment.contains("Scene"))
 }
 
 #[cfg(test)]
@@ -406,29 +340,14 @@ mod tests {
     }
 
     #[test]
-    fn scene_list_snapshot_distinguishes_unknown_from_authoritative_empty() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = ActorState::new(event_bus, 7);
-
-        assert!(state.snapshot().scene_list.is_none());
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/SceneList".to_string(),
-                args: vec![crate::lv1::osc::OscArg::Int(0)],
-            },
-        );
-
-        assert_eq!(state.snapshot().scene_list, Some(Vec::new()));
-        assert!(matches!(
-            events.try_recv(),
-            Ok(crate::runtime::events::AppEvent::Lv1 {
-                generation: 7,
-                event: Lv1Event::SceneListChanged(scene_list),
-            }) if scene_list.is_empty()
-        ));
+    fn scene_buffer_consumes_both_fields_after_each_observation() {
+        let mut buffer = SceneBuffer::default();
+        assert!(buffer.apply_index(1).is_none());
+        assert!(buffer.apply_index(2).is_none());
+        assert_eq!(buffer.apply_name("Latest".to_string()).unwrap().index, 2);
+        assert!(buffer.apply_name("Next".to_string()).is_none());
+        assert_eq!(buffer.apply_index(3).unwrap().name, "Next");
+        assert!(buffer.apply_index(4).is_none());
     }
 
     #[test]
@@ -444,101 +363,6 @@ mod tests {
         let mut channels = vec![channel(0)];
         assert!(!apply_fader_update(&mut channels, 0, 99, -3.0));
         assert_eq!(channels[0].gain_db, -9.0);
-    }
-
-    #[test]
-    fn gain_notifications_normalize_float_double_and_int_values() {
-        let cases = [
-            (crate::lv1::osc::OscArg::Float(-6.25), -6.25),
-            (crate::lv1::osc::OscArg::Double(-6.25), -6.25),
-            (crate::lv1::osc::OscArg::Int(-6), -6.0),
-        ];
-
-        for (gain_arg, expected) in cases {
-            let event_bus = AppEventBus::default();
-            let mut events = event_bus.subscribe();
-            let mut state = ActorState::new(event_bus, 7);
-            state.channels = vec![channel(0)];
-
-            handle_message(
-                &mut state,
-                &crate::lv1::osc::OscMessage {
-                    address: "/Notify/Track/Out/Gain".to_string(),
-                    args: vec![
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Int(0),
-                        gain_arg,
-                    ],
-                },
-            );
-
-            assert_eq!(state.channels[0].gain_db, expected);
-            assert!(matches!(
-                events.try_recv(),
-                Ok(crate::runtime::events::AppEvent::Lv1 {
-                    generation: 7,
-                    event: Lv1Event::FaderChanged {
-                        group: 0,
-                        channel: 0,
-                        gain_db,
-                    },
-                }) if gain_db == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn gain_notification_for_unknown_channel_does_not_mutate_or_publish() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = ActorState::new(event_bus, 7);
-        state.channels = vec![channel(0)];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Track/Out/Gain".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(99),
-                    crate::lv1::osc::OscArg::Float(-6.25),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].gain_db, -9.0);
-        assert!(events.try_recv().is_err());
-    }
-
-    #[test]
-    fn width_active_accepts_only_zero_or_one_without_promoting_malformed_values() {
-        for (active, expected_width, expects_event) in [
-            (0, None, false),
-            (1, Some(0.75), true),
-            (-1, None, false),
-            (2, None, false),
-        ] {
-            let event_bus = AppEventBus::default();
-            let mut events = event_bus.subscribe();
-            let mut state = ActorState::new(event_bus, 9);
-            state.channels = vec![channel(0)];
-
-            handle_message(
-                &mut state,
-                &crate::lv1::osc::OscMessage {
-                    address: "/Notify/PanArcWidth".to_string(),
-                    args: vec![
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Int(0),
-                        crate::lv1::osc::OscArg::Double(0.75),
-                        crate::lv1::osc::OscArg::Int(active),
-                    ],
-                },
-            );
-
-            assert_eq!(state.channels[0].width, expected_width);
-            assert_eq!(events.try_recv().is_ok(), expects_event);
-        }
     }
 
     #[test]

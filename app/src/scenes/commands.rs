@@ -2,7 +2,7 @@ use tokio::sync::oneshot;
 
 use crate::lv1::{ConnectionStatus, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
-use crate::scenes::{SceneConfig, SceneDocument};
+use crate::scenes::SceneConfig;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -12,23 +12,11 @@ pub enum ScenesCommand {
     },
     /// @cc [owner:mixxorz,label:persistence] session-replacement-single-owner-turn
     /// Session replacement MUST commit scene and cue documents in one owner turn under the
-    /// replacement ticket and expected-generation check, cancel queued recall and cue-advance
-    /// intent without aborting an active fade, and publish one combined `SessionReplaced`
-    /// projection.
+    /// replacement ticket and expected-generation check, reset old-document recall intent without
+    /// aborting an active fade, and publish one combined `SessionReplaced` projection.
     ReplaceSessionDocument {
         replacement: crate::session::SessionReplacement,
         expected_generation: u64,
-        reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
-    },
-    /// @cc [owner:mixxorz,label:persistence;concurrency] guarded-session-replacement-admission
-    /// The exact persisted revision and generation MUST both remain valid at the synchronous commit.
-    /// Scenes MUST hold the persisted-revision gate across the bounded in-memory scene/cue
-    /// replacement and combined `SessionReplaced` publication. Mismatch MUST leave both documents
-    /// unchanged.
-    GuardedReplaceSessionDocument {
-        replacement: crate::session::SessionReplacement,
-        expected_generation: u64,
-        expected_persisted_revision: u64,
         reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
     },
     GetSceneConfig {
@@ -131,7 +119,7 @@ pub struct RecallSceneResult {
 /// reject the request.
 pub fn validate_recall_scene_request(
     lockout: bool,
-    scene_document: &SceneDocument,
+    scene_configs: &[SceneConfig],
     lv1: &Lv1StateSnapshot,
     internal_scene_id: Uuid,
 ) -> Result<RecallSceneResult, String> {
@@ -139,8 +127,7 @@ pub fn validate_recall_scene_request(
         return Err("Recall blocked: lockout is enabled".to_string());
     }
 
-    let scene = scene_document
-        .scene_configs
+    let scene = scene_configs
         .iter()
         .find(|scene| scene.internal_scene_id == internal_scene_id)
         .cloned()
@@ -204,10 +191,7 @@ mod tests {
     #[test]
     fn validate_recall_scene_request_uses_internal_scene_id() {
         let id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, Some(1))],
-        };
+        let scenes = vec![scene_config(id, Some(1))];
 
         let result = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap();
 
@@ -215,12 +199,21 @@ mod tests {
     }
 
     #[test]
+    fn validate_recall_scene_request_requires_exact_index_and_name() {
+        let id = Uuid::from_u128(1);
+        for (index, name) in [(2, "Intro"), (1, "Renamed")] {
+            let mut config = scene_config(id, Some(index));
+            config.scene_name = name.to_string();
+            let error =
+                validate_recall_scene_request(false, &[config], &lv1_snapshot(), id).unwrap_err();
+            assert_eq!(error, "Recall blocked: scene identity mismatch");
+        }
+    }
+
+    #[test]
     fn validate_recall_scene_request_rejects_unknown_scene_list() {
         let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, Some(1))],
-        };
+        let scenes = vec![scene_config(id, Some(1))];
         let mut snapshot = lv1_snapshot();
         snapshot.scene_list = None;
 
@@ -232,10 +225,7 @@ mod tests {
     #[test]
     fn validate_recall_scene_request_rejects_unlinked_scene() {
         let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, None)],
-        };
+        let scenes = vec![scene_config(id, None)];
 
         let err = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap_err();
 

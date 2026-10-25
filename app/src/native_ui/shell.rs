@@ -116,6 +116,7 @@ impl AppShell {
         };
         if resolve_next_scene(&self.snapshot, pending_go_count).is_none()
             || !self.go_submissions.borrow().can_submit()
+            || self.dispatcher.session_transition_pending()
             || self.modal_open(cx)
             || self.session_menu_open
             || self.shortcut_capture_active(cx)
@@ -124,13 +125,10 @@ impl AppShell {
         }
 
         self.action_context.focus(window, cx);
-        let command_id = self
-            .dispatcher
-            .dispatch_cued_cue_recall(self.snapshot.session_revision);
+        let command_id = self.dispatcher.dispatch_cued_cue_recall();
         self.go_submissions.borrow_mut().start(
             command_id,
             self.snapshot.state_version,
-            self.snapshot.session_revision,
             next_entry_id,
         );
         self.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
@@ -343,7 +341,8 @@ impl Render for AppShell {
 }
 
 /// @cc [owner:mixxorz,label:safety;product] go-submission-guard
-/// GO MUST be disabled without a resolvable cued scene or when eight GO commands are unsettled, but
+/// GO MUST be disabled during a pending session action, without a resolvable cued scene, or when
+/// eight GO commands are unsettled, but
 /// MUST remain available below that capacity while earlier GO recalls are unsettled. Pointer
 /// multi-click sequences MUST dispatch only their first click so an accidental double-click cannot
 /// enqueue a duplicate recall.
@@ -368,6 +367,7 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
     };
     let can_go = cued.is_some()
         && shell.go_submissions.borrow().can_submit()
+        && !shell.dispatcher.session_transition_pending()
         && !shell.modal_open(cx)
         && !shell.session_menu_open
         && !shell.shortcut_capture_active(cx);
@@ -444,15 +444,12 @@ pub(super) fn resolve_next_entry_id(
     snapshot: &AppViewState,
     pending_go_count: usize,
 ) -> Option<uuid::Uuid> {
-    let active_list_id = snapshot.active_cue_list_id.as_deref()?;
-    let projected_next_entry_id = snapshot
-        .cued_cue_entry_id
-        .as_deref()
-        .and_then(|id| uuid::Uuid::parse_str(id).ok());
+    let active_list_id = snapshot.active_cue_list_id?;
+    let projected_next_entry_id = snapshot.cued_cue_entry_id;
     let list = snapshot
         .cue_lists
         .iter()
-        .find(|list| list.id.to_string() == active_list_id)?;
+        .find(|list| list.id == active_list_id)?;
     displayed_next_cue_entry_id(&list.entries, projected_next_entry_id, pending_go_count)
 }
 
@@ -460,12 +457,12 @@ pub(super) fn resolve_next_scene(
     snapshot: &AppViewState,
     pending_go_count: usize,
 ) -> Option<&crate::scenes::SceneConfig> {
-    let active_list_id = snapshot.active_cue_list_id.as_deref()?;
+    let active_list_id = snapshot.active_cue_list_id?;
     let next_entry_id = resolve_next_entry_id(snapshot, pending_go_count)?;
     let list = snapshot
         .cue_lists
         .iter()
-        .find(|list| list.id.to_string() == active_list_id)?;
+        .find(|list| list.id == active_list_id)?;
     let entry = list
         .entries
         .iter()
@@ -559,17 +556,30 @@ mod tests {
 
         for command_id in 1..=GO_SUBMISSION_CAPACITY as u64 {
             assert!(guard.can_submit());
-            guard.start(command_id, 0, 0, Uuid::from_u128(command_id as u128));
+            guard.start(command_id, 0, Uuid::from_u128(command_id as u128));
         }
         assert!(!guard.can_submit());
 
         let snapshot = AppViewState::default();
-        assert!(guard.finish(1, None, &snapshot));
-        assert!(guard.can_submit());
-        guard.start(9, 0, 0, Uuid::from_u128(9));
-        assert!(!guard.can_submit());
-        assert!(!guard.finish(1, None, &snapshot));
         assert!(!guard.finish(99, None, &snapshot));
+        assert!(!guard.can_submit());
+        assert!(guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
+        assert!(guard.can_submit());
+        guard.start(9, 0, Uuid::from_u128(9));
+        assert!(!guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
+        assert!(!guard.can_submit());
+        let advanced = AppViewState {
+            state_version: 1,
+            current_cue_entry_id: Some(Uuid::from_u128(8)),
+            ..Default::default()
+        };
+        assert!(guard.observe_snapshot(&advanced));
+        assert!(
+            !guard.can_submit(),
+            "projection does not release command capacity"
+        );
+        assert!(guard.finish(9, None, &advanced));
+        assert!(guard.can_submit());
     }
 
     #[test]
@@ -603,8 +613,8 @@ mod tests {
                     },
                 ],
             }],
-            active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(first_entry_id.to_string()),
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(first_entry_id),
             scene_configs: vec![
                 scene(first_scene_id, "First"),
                 scene(second_scene_id, "Second"),
@@ -621,6 +631,52 @@ mod tests {
             Some("Second")
         );
         assert!(resolve_next_scene(&snapshot, 2).is_none());
+    }
+
+    #[test]
+    fn next_scene_requires_the_active_entry_to_resolve_to_a_scene_config() {
+        let list_id = Uuid::new_v4();
+        let entry_id = Uuid::new_v4();
+        let scene_id = Uuid::new_v4();
+        let mut view = AppViewState {
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(entry_id),
+            cue_lists: vec![CueList {
+                id: list_id,
+                name: "Main".to_string(),
+                entries: vec![CueEntry {
+                    id: entry_id,
+                    scene_internal_id: scene_id,
+                }],
+            }],
+            ..Default::default()
+        };
+        assert!(resolve_next_scene(&view, 0).is_none());
+
+        view.scene_configs.push(SceneConfig {
+            internal_scene_id: scene_id,
+            scene_index: Some(1),
+            scene_name: "Intro".to_string(),
+            duration_ms: 1_000,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: Default::default(),
+        });
+        assert_eq!(
+            resolve_next_scene(&view, 0).map(|scene| scene.internal_scene_id),
+            Some(scene_id)
+        );
+
+        for (active_list_id, cued_entry_id) in [
+            (None, Some(entry_id)),
+            (Some(Uuid::new_v4()), Some(entry_id)),
+            (Some(list_id), None),
+            (Some(list_id), Some(Uuid::new_v4())),
+        ] {
+            view.active_cue_list_id = active_list_id;
+            view.cued_cue_entry_id = cued_entry_id;
+            assert!(resolve_next_scene(&view, 0).is_none());
+        }
     }
 
     #[test]

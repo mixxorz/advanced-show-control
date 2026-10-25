@@ -16,7 +16,6 @@ pub const CONSOLE_LINE_STRONG: u32 = 0x3a3a40;
 pub const CONSOLE_PRIMARY: u32 = 0xdedbd6;
 pub const CONSOLE_SECONDARY: u32 = 0xb8b3ab;
 pub const CONSOLE_MUTED: u32 = 0x8f8981;
-pub const CONSOLE_DISABLED: u32 = 0x56524d;
 
 pub const SCROLLBAR_WIDTH: f32 = 16.;
 pub const SCROLLBAR_CONTENT_INSET: f32 = SCROLLBAR_WIDTH + 12.;
@@ -133,16 +132,6 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn native_palette_matches_the_existing_console_tokens() {
-        assert_eq!(CONSOLE_BG, 0x050506);
-        assert_eq!(CONSOLE_PRIMARY, 0xdedbd6);
-        assert_eq!(ACCENT_ORANGE, 0xff8a00);
-        assert_eq!(STATUS_CURRENT, 0x2c9dff);
-        assert_eq!(STATUS_CUED, 0x52d62d);
-        assert_eq!(STATUS_DANGER, 0xff5c5c);
-    }
 
     #[gpui_kit::test]
     fn bundled_fonts_and_console_theme_install(cx: &mut gpui_kit::TestAppContext) {

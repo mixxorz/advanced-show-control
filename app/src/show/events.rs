@@ -7,7 +7,6 @@ pub struct ShowSessionState {
     pub show_file_path: Option<PathBuf>,
     pub show_file_name: String,
     pub show_file_dirty: bool,
-    pub persisted_session_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

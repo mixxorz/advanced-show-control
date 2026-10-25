@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use uuid::Uuid;
 
@@ -14,14 +14,12 @@ pub(super) const GO_SUBMISSION_CAPACITY: usize = 8;
 /// two facts MAY arrive in either order and MUST be reconciled without double-advancing.
 #[derive(Default)]
 pub(super) struct GoSubmissionGuard {
-    command_ids: HashSet<u64>,
     presentation_queue: VecDeque<GoPresentationEntry>,
 }
 
 struct GoPresentationEntry {
     command_id: u64,
     started_state_version: u64,
-    started_session_revision: u64,
     intended_entry_id: Option<Uuid>,
     command_succeeded: bool,
     snapshot_acknowledged: bool,
@@ -29,7 +27,11 @@ struct GoPresentationEntry {
 
 impl GoSubmissionGuard {
     pub fn can_submit(&self) -> bool {
-        self.command_ids.len() < GO_SUBMISSION_CAPACITY
+        self.presentation_queue
+            .iter()
+            .filter(|entry| !entry.command_succeeded)
+            .count()
+            < GO_SUBMISSION_CAPACITY
     }
 
     pub fn presentation_pending_count(&self) -> usize {
@@ -39,20 +41,17 @@ impl GoSubmissionGuard {
             .count()
     }
 
-    pub fn start(
-        &mut self,
-        command_id: u64,
-        state_version: u64,
-        session_revision: u64,
-        intended_entry_id: Uuid,
-    ) {
+    pub fn start(&mut self, command_id: u64, state_version: u64, intended_entry_id: Uuid) {
         debug_assert!(self.can_submit());
-        let inserted = self.command_ids.insert(command_id);
-        debug_assert!(inserted);
+        debug_assert!(
+            !self
+                .presentation_queue
+                .iter()
+                .any(|entry| { entry.command_id == command_id && !entry.command_succeeded })
+        );
         self.presentation_queue.push_back(GoPresentationEntry {
             command_id,
             started_state_version: state_version,
-            started_session_revision: session_revision,
             intended_entry_id: Some(intended_entry_id),
             command_succeeded: false,
             snapshot_acknowledged: false,
@@ -65,15 +64,12 @@ impl GoSubmissionGuard {
         recalled_entry_id: Option<Uuid>,
         snapshot: &AppViewState,
     ) -> bool {
-        if !self.command_ids.remove(&command_id) {
-            return false;
-        }
         let Some(index) = self
             .presentation_queue
             .iter()
-            .position(|entry| entry.command_id == command_id)
+            .position(|entry| entry.command_id == command_id && !entry.command_succeeded)
         else {
-            return true;
+            return false;
         };
         if let Some(recalled_entry_id) = recalled_entry_id {
             if self.presentation_queue[index].intended_entry_id != Some(recalled_entry_id) {
@@ -93,24 +89,10 @@ impl GoSubmissionGuard {
     }
 
     pub fn observe_snapshot(&mut self, snapshot: &AppViewState) -> bool {
-        if self
-            .presentation_queue
-            .iter()
-            .any(|entry| entry.started_session_revision != snapshot.session_revision)
-        {
-            return self.invalidate();
-        }
-        let Some(current_entry_id) = snapshot
-            .current_cue_entry_id
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok())
-        else {
+        let Some(current_entry_id) = snapshot.current_cue_entry_id else {
             return false;
         };
-        let projected_next_entry_id = snapshot
-            .cued_cue_entry_id
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok());
+        let projected_next_entry_id = snapshot.cued_cue_entry_id;
         if projected_next_entry_id == Some(current_entry_id) {
             return false;
         }
@@ -129,21 +111,14 @@ impl GoSubmissionGuard {
         changed
     }
 
-    pub fn invalidate(&mut self) -> bool {
-        let changed = !self.command_ids.is_empty() || !self.presentation_queue.is_empty();
-        self.command_ids.clear();
-        self.presentation_queue.clear();
-        changed
-    }
-
     fn rebase_from(&mut self, index: usize, first_entry_id: Uuid, snapshot: &AppViewState) {
-        let Some(active_list_id) = snapshot.active_cue_list_id.as_deref() else {
+        let Some(active_list_id) = snapshot.active_cue_list_id else {
             return;
         };
         let Some(entries) = snapshot
             .cue_lists
             .iter()
-            .find(|list| list.id.to_string() == active_list_id)
+            .find(|list| list.id == active_list_id)
             .map(|list| list.entries.as_slice())
         else {
             return;
@@ -206,12 +181,6 @@ impl PresentationState {
         accepted
     }
 
-    pub fn begin_command(&mut self) -> u64 {
-        let command_id = self.latest_command_id.wrapping_add(1);
-        self.command_started(command_id);
-        command_id
-    }
-
     pub fn command_started(&mut self, command_id: u64) {
         if command_id > self.latest_command_id {
             self.latest_command_id = command_id;
@@ -232,32 +201,6 @@ impl PresentationState {
 
     pub fn window_title(&self) -> String {
         format_session_window_title(&self.snapshot.show_file_name, self.snapshot.show_file_dirty)
-    }
-
-    pub fn cued_scene_is_valid(&self) -> bool {
-        let Some(active_list_id) = self.snapshot.active_cue_list_id.as_deref() else {
-            return false;
-        };
-        let Some(cued_entry_id) = self.snapshot.cued_cue_entry_id.as_deref() else {
-            return false;
-        };
-        let Some(entry) = self
-            .snapshot
-            .cue_lists
-            .iter()
-            .find(|list| list.id.to_string() == active_list_id)
-            .and_then(|list| {
-                list.entries
-                    .iter()
-                    .find(|entry| entry.id.to_string() == cued_entry_id)
-            })
-        else {
-            return false;
-        };
-        self.snapshot
-            .scene_configs
-            .iter()
-            .any(|scene| scene.internal_scene_id == entry.scene_internal_id)
     }
 }
 
@@ -283,7 +226,6 @@ pub(super) fn session_display_name(show_file_name: &str) -> &str {
 mod tests {
     use super::*;
     use crate::cue_lists::{CueEntry, CueList};
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
     use uuid::Uuid;
 
     fn snapshot(version: u64, name: &str) -> AppViewState {
@@ -304,9 +246,9 @@ mod tests {
         }
         AppViewState {
             state_version: version,
-            current_cue_entry_id: Some(current.to_string()),
-            cued_cue_entry_id: next.map(|id| id.to_string()),
-            active_cue_list_id: Some(list_id.to_string()),
+            current_cue_entry_id: Some(current),
+            cued_cue_entry_id: next,
+            active_cue_list_id: Some(list_id),
             cue_lists: vec![CueList {
                 id: list_id,
                 name: "Main".to_string(),
@@ -328,8 +270,8 @@ mod tests {
 
         assert!(state.accept_snapshot(snapshot(0, "First")));
         assert!(!state.accept_snapshot(snapshot(0, "Equal")));
-        assert!(!state.accept_snapshot(snapshot(0, "Older")));
         assert!(state.accept_snapshot(snapshot(1, "Newer")));
+        assert!(!state.accept_snapshot(snapshot(0, "Older")));
         assert_eq!(state.snapshot().show_file_name, "Newer");
     }
 
@@ -339,13 +281,13 @@ mod tests {
         let next_entry_id = Uuid::from_u128(2);
         let old_snapshot = AppViewState {
             state_version: 10,
-            cued_cue_entry_id: Some(recalled_entry_id.to_string()),
+            cued_cue_entry_id: Some(recalled_entry_id),
             ..Default::default()
         };
         let advanced_snapshot = cue_snapshot(11, recalled_entry_id, Some(next_entry_id));
 
         let mut completion_first = GoSubmissionGuard::default();
-        completion_first.start(1, old_snapshot.state_version, 0, recalled_entry_id);
+        completion_first.start(1, old_snapshot.state_version, recalled_entry_id);
         assert!(completion_first.finish(1, Some(recalled_entry_id), &old_snapshot));
         assert!(completion_first.can_submit());
         assert_eq!(completion_first.presentation_pending_count(), 1);
@@ -353,7 +295,7 @@ mod tests {
         assert_eq!(completion_first.presentation_pending_count(), 0);
 
         let mut projection_first = GoSubmissionGuard::default();
-        projection_first.start(1, old_snapshot.state_version, 0, recalled_entry_id);
+        projection_first.start(1, old_snapshot.state_version, recalled_entry_id);
         assert!(projection_first.observe_snapshot(&advanced_snapshot));
         assert_eq!(projection_first.presentation_pending_count(), 0);
         assert!(projection_first.finish(1, Some(recalled_entry_id), &advanced_snapshot));
@@ -362,41 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn session_replacement_discards_success_waiting_for_its_projection() {
-        let recalled_entry_id = Uuid::from_u128(1);
-        let old_snapshot = AppViewState {
-            state_version: 10,
-            cued_cue_entry_id: Some(recalled_entry_id.to_string()),
-            ..Default::default()
-        };
-        let mut guard = GoSubmissionGuard::default();
-        guard.start(1, old_snapshot.state_version, 0, recalled_entry_id);
-        assert!(guard.finish(1, Some(recalled_entry_id), &old_snapshot));
-        assert_eq!(guard.presentation_pending_count(), 1);
-
-        let replacement = AppViewState {
-            state_version: 11,
-            session_revision: 1,
-            ..Default::default()
-        };
-        assert!(guard.observe_snapshot(&replacement));
-        assert_eq!(guard.presentation_pending_count(), 0);
-        assert!(guard.can_submit());
-
-        let mut completion_late = GoSubmissionGuard::default();
-        completion_late.start(2, old_snapshot.state_version, 0, recalled_entry_id);
-        assert!(completion_late.observe_snapshot(&replacement));
-        assert!(!completion_late.finish(2, None, &replacement));
-    }
-
-    #[test]
     fn late_failure_reconciles_a_later_success_against_the_latest_projection() {
         let recalled_entry_id = Uuid::from_u128(1);
         let next_entry_id = Uuid::from_u128(2);
         let advanced_snapshot = cue_snapshot(11, recalled_entry_id, Some(next_entry_id));
         let mut guard = GoSubmissionGuard::default();
-        guard.start(1, 10, 0, recalled_entry_id);
-        guard.start(2, 10, 0, next_entry_id);
+        guard.start(1, 10, recalled_entry_id);
+        guard.start(2, 10, next_entry_id);
 
         assert!(guard.finish(2, Some(recalled_entry_id), &advanced_snapshot));
         assert_eq!(guard.presentation_pending_count(), 0);
@@ -407,8 +321,10 @@ mod tests {
     #[test]
     fn older_command_result_cannot_replace_latest_command_error() {
         let mut state = PresentationState::default();
-        let first = state.begin_command();
-        let second = state.begin_command();
+        let first = 1;
+        let second = 2;
+        state.command_started(first);
+        state.command_started(second);
 
         assert!(state.complete_command(second, Err("new failure".to_string())));
         assert!(!state.complete_command(first, Ok(())));
@@ -432,39 +348,5 @@ mod tests {
             format_session_window_title("Show.ascs", false),
             "Advanced Show Control - Show"
         );
-    }
-
-    #[test]
-    fn cued_scene_is_valid_only_when_active_entry_resolves_to_scene_config() {
-        let list_id = Uuid::new_v4();
-        let entry_id = Uuid::new_v4();
-        let scene_id = Uuid::new_v4();
-        let mut state = PresentationState::default();
-        let mut view = snapshot(1, "Show");
-        view.active_cue_list_id = Some(list_id.to_string());
-        view.cued_cue_entry_id = Some(entry_id.to_string());
-        view.cue_lists = vec![CueList {
-            id: list_id,
-            name: "Main".to_string(),
-            entries: vec![CueEntry {
-                id: entry_id,
-                scene_internal_id: scene_id,
-            }],
-        }];
-        assert!(state.accept_snapshot(view.clone()));
-        assert!(!state.cued_scene_is_valid());
-
-        view.state_version = 2;
-        view.scene_configs.push(SceneConfig {
-            internal_scene_id: scene_id,
-            scene_index: Some(1),
-            scene_name: "Intro".to_string(),
-            duration_ms: 1_000,
-            channel_configs: Vec::new(),
-            scoped_channels: Vec::new(),
-            scope_toggles: SceneScopeToggles::default(),
-        });
-        assert!(state.accept_snapshot(view));
-        assert!(state.cued_scene_is_valid());
     }
 }

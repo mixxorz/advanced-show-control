@@ -26,7 +26,7 @@ impl ShowState {
     /// After documents for a new show have committed, resetting metadata MUST clear lockout, path,
     /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
-        self.clear();
+        self.lockout = false;
         self.reset_file_metadata();
     }
 
@@ -95,15 +95,11 @@ impl ShowState {
     /// @cc [owner:mixxorz,label:product;presentation] session-query-names-current-show
     /// The authoritative session-state query MUST return the same current show-file name as the
     /// Show projection, including "Untitled Session" when there is no backing path.
-    pub(crate) fn session_state(
-        &self,
-        persisted_session_revision: u64,
-    ) -> super::events::ShowSessionState {
+    pub(crate) fn session_state(&self) -> super::events::ShowSessionState {
         super::events::ShowSessionState {
             show_file_path: self.show_file_path.clone(),
             show_file_name: self.show_file_name(),
             show_file_dirty: self.show_file_dirty,
-            persisted_session_revision,
         }
     }
 
@@ -129,10 +125,6 @@ impl ShowState {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.lockout = false;
-    }
-
     /// @cc [owner:mixxorz,label:safety] lockout-change-outcome
     /// Lockout updates MUST report `true` only when the stored safety value changes; repeated values
     /// MUST remain no-ops so callers do not publish misleading state changes.
@@ -153,17 +145,17 @@ mod tests {
     #[test]
     fn session_query_and_projection_name_the_same_show() {
         let mut state = ShowState::default();
-        assert_eq!(state.session_state(0).show_file_name, "Untitled Session");
+        assert_eq!(state.session_state().show_file_name, "Untitled Session");
         assert_eq!(
-            state.session_state(0).show_file_name,
+            state.session_state().show_file_name,
             state.projection_state().show_file_name
         );
 
         state.mark_saved("/shows/Tour.Show.ascs".into(), "saved".to_string());
         state.mark_dirty();
-        assert_eq!(state.session_state(1).show_file_name, "Tour.Show.ascs");
+        assert_eq!(state.session_state().show_file_name, "Tour.Show.ascs");
         assert_eq!(
-            state.session_state(1).show_file_name,
+            state.session_state().show_file_name,
             state.projection_state().show_file_name
         );
     }

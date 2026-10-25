@@ -17,7 +17,7 @@ use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scen
 use crate::settings::AppSettings;
 use crate::show::ShowLockoutReader;
 
-use super::{RecallSceneResult, SceneDocument, ScenesEvent, ScenesState};
+use super::{RecallSceneResult, SceneConfig, ScenesEvent, ScenesState};
 
 pub(super) const RECALL_QUEUE_CAPACITY: usize = 8;
 pub(super) const RECALL_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,7 +120,7 @@ enum InFlightPhase {
 struct InFlightRecall {
     request_id: Uuid,
     generation: u64,
-    result: RecallSceneResult,
+    scene: SceneState,
     phase: InFlightPhase,
 }
 
@@ -217,10 +217,7 @@ impl LateCanceledObservations {
         self.record(
             in_flight.generation,
             dispatch_sequence,
-            SceneState {
-                index: in_flight.result.lv1_scene_index,
-                name: in_flight.result.scene.scene_name,
-            },
+            in_flight.scene,
             Instant::now(),
         );
     }
@@ -579,7 +576,7 @@ impl RecallCoordinator {
         } else {
             let same_scene_repeat_delay =
                 Duration::from_millis(settings.same_scene_recall_threshold_ms);
-            (!recall_state.accepts(&observation.scene, same_scene_repeat_delay))
+            (!recall_state.accepts_at(&observation.scene, Instant::now(), same_scene_repeat_delay))
                 .then(|| "scene not accepted by recall policy".to_string())
         };
         if let Some(reason) = skipped_reason.as_deref()
@@ -643,48 +640,30 @@ impl RecallCoordinator {
         } else {
             decide_scene_recall(RecallPolicyInput {
                 recalled_scene: observation.scene.clone(),
-                lv1_snapshot: lv1_snapshot.clone(),
+                lv1_snapshot,
                 lockout: lockout.current(),
-                scene_config: scene_config.clone(),
+                scene_config,
             })
         };
         let blocked = matches!(&decision, RecallPolicyDecision::Blocked { .. });
         let scene_label = scene_label(&observation.scene);
 
         match decision {
-            RecallPolicyDecision::Start(initial_fade_config) => {
-                let (fade_config, readiness, queued_readiness) = if let Some(queue_readiness) =
-                    queue_readiness
-                {
-                    let current_lockout = lockout.current();
-                    let RecallPolicyDecision::Start(fade_config) =
-                        decide_scene_recall(RecallPolicyInput {
-                            recalled_scene: observation.scene.clone(),
-                            lv1_snapshot,
-                            lockout: current_lockout,
-                            scene_config,
-                        })
-                    else {
-                        self.cancel(
-                            if current_lockout {
-                                "lockout was enabled"
-                            } else {
-                                "LV1 recall readiness was lost"
-                            },
-                            true,
-                        );
+            RecallPolicyDecision::Start(fade_config) => {
+                let (readiness, queued_readiness) = if let Some(queue_readiness) = queue_readiness {
+                    if lockout.current() {
+                        self.cancel("lockout was enabled", true);
                         return None;
-                    };
+                    }
                     let Some((readiness, completion)) =
                         self.prepare_readiness(queue_readiness, Instant::now())
                     else {
                         self.cancel("LV1 recall readiness was lost", true);
                         return None;
                     };
-                    (fade_config, readiness, Some((queue_readiness, completion)))
+                    (readiness, Some((queue_readiness, completion)))
                 } else {
                     (
-                        initial_fade_config,
                         RecallReadinessRequest::detached(Instant::now() + RECALL_READINESS_TIMEOUT),
                         None,
                     )
@@ -823,12 +802,12 @@ impl RecallCoordinator {
         &mut self,
         admission: PendingRecallAdmission,
         lockout: &ShowLockoutReader,
-        scene_document: &SceneDocument,
+        scene_configs: &[SceneConfig],
         snapshot: &Lv1StateSnapshot,
     ) -> bool {
         if let Err(error) = validate_explicit_recall(
             lockout,
-            scene_document,
+            scene_configs,
             snapshot,
             admission.internal_scene_id,
         ) {
@@ -891,12 +870,12 @@ impl RecallCoordinator {
         dispatch: PendingRecallDispatch,
         generation: u64,
         lockout: &ShowLockoutReader,
-        scene_document: &SceneDocument,
+        scene_configs: &[SceneConfig],
         snapshot: &Lv1StateSnapshot,
     ) -> Result<PreparedRecallDispatch, ()> {
         match validate_explicit_recall(
             lockout,
-            scene_document,
+            scene_configs,
             snapshot,
             dispatch.queued.internal_scene_id,
         ) {
@@ -947,7 +926,10 @@ impl RecallCoordinator {
         self.in_flight = Some(InFlightRecall {
             request_id: prepared.queued.request_id,
             generation: prepared.generation,
-            result: prepared.result.clone(),
+            scene: SceneState {
+                index: prepared.result.lv1_scene_index,
+                name: prepared.result.scene.scene_name.clone(),
+            },
             phase: InFlightPhase::AwaitingObservation {
                 dispatch_sequence: dispatch.scene_observation_sequence,
                 deadline: Instant::now() + RECALL_READINESS_TIMEOUT,
@@ -991,8 +973,7 @@ impl RecallCoordinator {
         };
         (observation.generation == in_flight.generation
             && observation.sequence > dispatch_sequence
-            && observation.scene.index == in_flight.result.lv1_scene_index
-            && observation.scene.name == in_flight.result.scene.scene_name)
+            && observation.scene == in_flight.scene)
             .then_some(QueueReadiness {
                 request_id: in_flight.request_id,
                 generation: in_flight.generation,
@@ -1130,13 +1111,13 @@ pub(super) async fn send_fade_checked(
 
 fn validate_explicit_recall(
     lockout: &ShowLockoutReader,
-    scene_document: &SceneDocument,
+    scene_configs: &[SceneConfig],
     lv1_snapshot: &Lv1StateSnapshot,
     internal_scene_id: Uuid,
 ) -> Result<RecallSceneResult, AppCommandError> {
     crate::scenes::validate_recall_scene_request(
         lockout.current(),
-        scene_document,
+        scene_configs,
         lv1_snapshot,
         internal_scene_id,
     )
@@ -1201,23 +1182,14 @@ fn fresh_scene_timeout(scene: &SceneState) -> AppCommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
 
     fn in_flight(request_id: Uuid, phase: InFlightPhase) -> InFlightRecall {
         InFlightRecall {
             request_id,
             generation: 1,
-            result: RecallSceneResult {
-                scene: SceneConfig {
-                    internal_scene_id: Uuid::new_v4(),
-                    scene_index: Some(1),
-                    scene_name: "Intro".to_string(),
-                    duration_ms: 1_000,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: SceneScopeToggles::default(),
-                },
-                lv1_scene_index: 1,
+            scene: SceneState {
+                index: 1,
+                name: "Intro".to_string(),
             },
             phase,
         }

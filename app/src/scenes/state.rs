@@ -9,25 +9,10 @@ use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, Scene
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SCENE_LIST_EDIT_SUPPRESSION_WINDOW: Duration = Duration::from_millis(500);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RecallSceneIdentity {
-    index: i32,
-    name: String,
-}
-
-impl From<&SceneState> for RecallSceneIdentity {
-    fn from(scene: &SceneState) -> Self {
-        Self {
-            index: scene.index,
-            name: scene.name.clone(),
-        }
-    }
-}
-
 /// A scene observation: which scene and when it was seen.
 #[derive(Debug, Clone)]
 struct ObservedScene {
-    scene: RecallSceneIdentity,
+    scene: SceneState,
     at: Instant,
 }
 
@@ -76,7 +61,7 @@ enum RecallGate {
 #[derive(Debug, Default)]
 pub struct ScenesState {
     scene_configs: Vec<SceneConfig>,
-    selected_scene_internal_id: Option<String>,
+    selected_scene_internal_id: Option<uuid::Uuid>,
     scene_settings_clipboard: Option<SceneSettingsClipboard>,
     ready_generation: Option<u64>,
     gate: RecallGate,
@@ -88,7 +73,7 @@ impl ScenesState {
     pub(crate) fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
-            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+            selected_scene_internal_id: self.selected_scene_internal_id,
             scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
             ready_generation: self.ready_generation,
         }
@@ -96,14 +81,14 @@ impl ScenesState {
 
     /**
      * @cc [owner:mixxorz,label:persistence] scene-document-snapshot
-     * The persisted scene document MUST contain scene configs and selection, and MUST exclude
-     * connection-derived readiness, recall tracking, scene-list suppression, and the settings
-     * clipboard.
+     * The owner scene document MUST contain scene configs and UUID-or-absent selection, and MUST
+     * exclude connection-derived readiness, recall tracking, scene-list suppression, and the
+     * settings clipboard.
      */
     pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
-            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+            selected_scene_internal_id: self.selected_scene_internal_id,
         }
     }
 
@@ -133,15 +118,6 @@ impl ScenesState {
 
     pub(crate) fn scene_configs(&self) -> &[SceneConfig] {
         &self.scene_configs
-    }
-
-    pub(crate) fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {
-        self.last_scene_list.as_ref().and_then(|scene_list| {
-            scene_list
-                .iter()
-                .find(|scene| scene.index == index)
-                .cloned()
-        })
     }
 
     pub(crate) fn get_scene_config_mut(
@@ -178,10 +154,14 @@ impl ScenesState {
         &mut self,
         internal_scene_id: uuid::Uuid,
     ) -> Result<bool, String> {
-        if self.get_scene_config(internal_scene_id).is_none() {
+        if !self
+            .scene_configs
+            .iter()
+            .any(|scene| scene.internal_scene_id == internal_scene_id)
+        {
             return Err("Scene config not found".to_string());
         }
-        let next = Some(internal_scene_id.to_string());
+        let next = Some(internal_scene_id);
         if self.selected_scene_internal_id == next {
             return Ok(false);
         }
@@ -276,9 +256,7 @@ impl ScenesState {
             }
             let removed_internal_scene_id = self.scene_configs[target_index].internal_scene_id;
             self.scene_configs.remove(target_index);
-            if self.selected_scene_internal_id.as_deref()
-                == Some(&removed_internal_scene_id.to_string())
-            {
+            if self.selected_scene_internal_id == Some(removed_internal_scene_id) {
                 self.selected_scene_internal_id = None;
             }
         }
@@ -297,7 +275,14 @@ impl ScenesState {
         overwrite_existing: bool,
     ) -> Result<bool, String> {
         let target = self
-            .scene_list_entry_for_index(target_scene_index)
+            .last_scene_list
+            .as_ref()
+            .and_then(|scenes| {
+                scenes
+                    .iter()
+                    .find(|scene| scene.index == target_scene_index)
+            })
+            .cloned()
             .ok_or_else(|| "Link blocked: target scene not found".to_string())?;
         self.link_scene_config(source_internal_scene_id, &target, overwrite_existing)
     }
@@ -314,42 +299,34 @@ impl ScenesState {
             return Err("Scene config not found".to_string());
         };
         self.scene_configs.remove(index);
-        if self.selected_scene_internal_id.as_deref() == Some(&internal_scene_id.to_string()) {
+        if self.selected_scene_internal_id == Some(internal_scene_id) {
             self.selected_scene_internal_id = None;
         }
         Ok(true)
     }
 
     pub(crate) fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
-        match self.last_scene_list.as_ref() {
-            None => {
-                self.last_scene_list = Some(scene_list);
-            }
-            Some(previous) if previous == &scene_list => {
-                self.last_scene_list = Some(scene_list);
-            }
-            Some(_) => {
-                self.last_scene_list = Some(scene_list);
-                self.scene_list_edit_suppressed_until =
-                    Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
-            }
+        if self
+            .last_scene_list
+            .as_ref()
+            .is_some_and(|previous| previous != &scene_list)
+        {
+            self.scene_list_edit_suppressed_until = Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
         }
+        self.last_scene_list = Some(scene_list);
     }
 
     pub(crate) fn observe_and_align_scene_list(
         &mut self,
-        align_configs: bool,
         generation: u64,
         scene_list: Vec<SceneListEntry>,
         now: Instant,
     ) -> bool {
         let previous = self.scene_configs.clone();
         self.observe_scene_list(scene_list.clone(), now);
-        if align_configs {
-            self.scene_configs =
-                align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
-            self.ready_generation = Some(generation);
-        }
+        self.scene_configs =
+            align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
+        self.ready_generation = Some(generation);
         previous != self.scene_configs
     }
 
@@ -370,14 +347,6 @@ impl ScenesState {
             .unwrap_or(false)
     }
 
-    pub(crate) fn accepts(
-        &mut self,
-        current_scene: &SceneState,
-        same_scene_repeat_delay: Duration,
-    ) -> bool {
-        self.accepts_at(current_scene, Instant::now(), same_scene_repeat_delay)
-    }
-
     pub(crate) fn accepts_at(
         &mut self,
         current_scene: &SceneState,
@@ -385,7 +354,7 @@ impl ScenesState {
         same_scene_repeat_delay: Duration,
     ) -> bool {
         let observed = ObservedScene {
-            scene: RecallSceneIdentity::from(current_scene),
+            scene: current_scene.clone(),
             at: now,
         };
 
@@ -700,6 +669,18 @@ mod tests {
     }
 
     #[test]
+    fn recall_repeat_suppression_requires_both_scene_index_and_name() {
+        let mut state = ScenesState::default();
+        let start = Instant::now();
+        let repeat_delay = Duration::from_secs(10);
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, repeat_delay));
+        let armed = start + RECALL_ARMING_DELAY;
+        assert!(state.accepts_at(&scene(2, "Intro"), armed, repeat_delay));
+        assert!(state.accepts_at(&scene(2, "Verse"), armed, repeat_delay));
+        assert!(!state.accepts_at(&scene(2, "Verse"), armed, repeat_delay));
+    }
+
+    #[test]
     fn first_scene_list_establishes_baseline_without_suppression() {
         let mut state = ScenesState::default();
         let now = Instant::now();
@@ -736,14 +717,14 @@ mod tests {
     #[test]
     fn snapshot_round_trips_selected_scene_internal_id() {
         let mut state = ScenesState {
-            selected_scene_internal_id: Some("scene-123".to_string()),
+            selected_scene_internal_id: Some(uuid::Uuid::from_u128(123)),
             ..Default::default()
         };
 
         let snapshot = state.snapshot();
         assert_eq!(
             snapshot.selected_scene_internal_id,
-            Some("scene-123".to_string())
+            Some(uuid::Uuid::from_u128(123))
         );
 
         state.selected_scene_internal_id = None;
@@ -751,7 +732,7 @@ mod tests {
 
         assert_eq!(
             state.selected_scene_internal_id,
-            Some("scene-123".to_string())
+            Some(uuid::Uuid::from_u128(123))
         );
     }
 
@@ -1029,7 +1010,6 @@ mod tests {
         state.select_scene_config(source_id).unwrap();
         state.copy_scene_settings(source_id).unwrap();
         state.observe_and_align_scene_list(
-            true,
             0,
             vec![SceneListEntry {
                 index: 1,
@@ -1040,10 +1020,7 @@ mod tests {
         state.mark_scene_library_unavailable();
         let projection = state.projection_state();
         assert_eq!(projection.scene_configs[0].internal_scene_id, source_id);
-        assert_eq!(
-            projection.selected_scene_internal_id,
-            Some(source_id.to_string())
-        );
+        assert_eq!(projection.selected_scene_internal_id, Some(source_id));
         assert!(projection.scene_settings_clipboard_available);
         assert_eq!(projection.ready_generation, None);
     }

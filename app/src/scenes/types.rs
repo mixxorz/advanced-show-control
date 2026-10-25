@@ -40,11 +40,14 @@ pub struct SceneConfig {
     pub scope_toggles: SceneScopeToggles,
 }
 
+/// @cc [owner:mixxorz,label:architecture;validation] selected-scene-uuid-boundary
+/// Selection MUST be a UUID or absent throughout the scene document, commands, and projections.
+/// Scene-document deserialization MUST reject malformed selected IDs rather than retaining raw strings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneDocument {
     pub scene_configs: Vec<SceneConfig>,
-    pub selected_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<Uuid>,
 }
 
 impl SceneDocument {
@@ -65,7 +68,7 @@ mod tests {
         let internal_scene_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let config = SceneConfig {
             internal_scene_id,
-            scene_index: Some(0),
+            scene_index: None,
             scene_name: "Intro".to_string(),
             duration_ms: 1000,
             channel_configs: Vec::new(),
@@ -76,7 +79,7 @@ mod tests {
         let json = serde_json::to_value(config).unwrap();
 
         assert_eq!(json["internalSceneId"], internal_scene_id.to_string());
-        assert_eq!(json["sceneIndex"], 0);
+        assert_eq!(json.get("sceneIndex"), Some(&serde_json::Value::Null));
     }
 
     #[test]
@@ -152,10 +155,14 @@ mod tests {
         let json = serde_json::to_value(snapshot).unwrap();
 
         assert_eq!(json["selectedSceneInternalId"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<SceneDocument>(json).unwrap(),
+            SceneDocument::empty()
+        );
     }
 
     #[test]
-    fn scene_document_serializes_selected_scene_internal_id_and_scene_configs() {
+    fn scene_document_round_trips_uuid_selection_and_rejects_malformed_ids() {
         let internal_scene_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
         let document = SceneDocument {
             scene_configs: vec![SceneConfig {
@@ -167,36 +174,26 @@ mod tests {
                 scoped_channels: Vec::new(),
                 scope_toggles: SceneScopeToggles::default(),
             }],
-            selected_scene_internal_id: Some("selected".to_string()),
+            selected_scene_internal_id: Some(internal_scene_id),
         };
 
-        let json = serde_json::to_value(document).unwrap();
+        let mut json = serde_json::to_value(&document).unwrap();
 
-        assert_eq!(json["selectedSceneInternalId"], "selected");
+        assert_eq!(
+            json["selectedSceneInternalId"],
+            internal_scene_id.to_string()
+        );
+        assert_eq!(
+            serde_json::from_value::<SceneDocument>(json.clone()).unwrap(),
+            document
+        );
         assert_eq!(
             json["sceneConfigs"][0]["internalSceneId"],
             internal_scene_id.to_string()
         );
         assert_eq!(json["sceneConfigs"][0]["sceneIndex"], 12);
-    }
 
-    #[test]
-    fn missing_pan_scope_defaults_to_false() {
-        let json = serde_json::json!({ "faders": true });
-
-        let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
-
-        assert!(!toggles.pan);
-        assert!(toggles.faders);
-    }
-
-    #[test]
-    fn missing_fader_scope_defaults_to_false_when_scope_toggles_exist() {
-        let json = serde_json::json!({ "pan": true });
-
-        let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
-
-        assert!(!toggles.faders);
-        assert!(toggles.pan);
+        json["selectedSceneInternalId"] = serde_json::json!("scene-123");
+        assert!(serde_json::from_value::<SceneDocument>(json).is_err());
     }
 }

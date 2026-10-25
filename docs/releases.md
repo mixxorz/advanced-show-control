@@ -46,7 +46,7 @@ GitHub token is required. An older release without Velopack feeds cannot supply 
 - Manual checks remain available when automatic checks are off.
 - Checks never download, and downloads never install.
 - **Software Updates…** offers download, then a separate **Update and restart** confirmation.
-- Restart uses Save / Don't Save / Cancel, disconnects LV1, and rechecks the session revision before
+- Restart uses Save / Don't Save / Cancel, disconnects LV1, and holds the session workflow busy before
   handing installation to Velopack. A cancelled or failed save never starts installation.
 - Startup auto-apply is disabled. Ordinary Quit does not install downloaded packages.
 - The updater helper waits for the current process to exit before applying and restarting.

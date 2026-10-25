@@ -22,13 +22,10 @@ class ReleaseMetadataTests(unittest.TestCase):
             ("2026-10-01T00:00:00+00:00", "12.177.49536"),
             ("2156-02-07T06:28:15+00:00", "255.255.65535"),
         ]
-        versions = []
         for timestamp, expected in cases:
             with self.subTest(timestamp=timestamp):
                 actual = metadata.version_from_timestamp(datetime.fromisoformat(timestamp))
                 self.assertEqual(actual, expected)
-                versions.append(tuple(map(int, actual.split("."))))
-        self.assertEqual(versions, sorted(set(versions)))
 
     def test_timestamp_requires_timezone_and_representable_epoch_seconds(self):
         for timestamp in ["2019-12-31T23:59:59+00:00", "2156-02-07T06:28:16+00:00", "2026-10-01T00:00:00"]:

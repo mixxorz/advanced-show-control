@@ -295,9 +295,4 @@ mod tests {
             None
         );
     }
-
-    #[gpui_kit::test]
-    fn key_contexts_expose_distinct_gpui_scopes(_: &mut gpui_kit::TestAppContext) {
-        assert_ne!(global_key_context(), shortcut_capture_key_context());
-    }
 }

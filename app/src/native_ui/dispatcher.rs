@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use tokio::sync::mpsc;
@@ -28,8 +28,6 @@ pub enum UiEvent {
     },
     CueRecallFinished {
         command_id: u64,
-        session_revision: u64,
-        canceled_by_session_replacement: bool,
         result: Result<CueRecallResult, String>,
     },
     SaveDestinationRequired {
@@ -37,7 +35,6 @@ pub enum UiEvent {
     },
     SessionStateQueryFinished {
         query_id: u64,
-        persisted_edit_epoch: u64,
         result: Result<ShowSessionState, String>,
     },
     UpdateInstallPrepared {
@@ -46,8 +43,6 @@ pub enum UiEvent {
     },
     UpdateShutdownPrepared {
         command_id: u64,
-        expected_revision: Option<u64>,
-        expected_edit_epoch: Option<u64>,
         result: Result<UpdateInstallPlan, String>,
     },
     LatencyMeasured {
@@ -65,7 +60,7 @@ pub struct CommandDispatcher {
     ui_events: mpsc::UnboundedSender<UiEvent>,
     serial_commands: mpsc::UnboundedSender<SerialCommand>,
     next_command_id: Arc<AtomicU64>,
-    persisted_edit_epoch: Arc<AtomicU64>,
+    session_transition_pending: Arc<AtomicBool>,
     #[cfg(any(test, feature = "debug-tools"))]
     latency_probe_override: Option<LatencyProbeOverride>,
 }
@@ -106,7 +101,7 @@ impl CommandDispatcher {
             ui_events,
             serial_commands,
             next_command_id: Arc::new(AtomicU64::new(0)),
-            persisted_edit_epoch: Arc::new(AtomicU64::new(0)),
+            session_transition_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(any(test, feature = "debug-tools"))]
             latency_probe_override: None,
         }
@@ -141,39 +136,33 @@ impl CommandDispatcher {
     }
 
     /// @cc [owner:mixxorz,label:safety;ordering] ordered-go-dispatch
-    /// A GO command MUST be synchronously admitted to the cue mailbox before this method returns and
-    /// before its response waiter is spawned. Command-started and command-finished events MUST retain
+    /// A GO command MUST be rejected while a UI session transition is pending. Otherwise it MUST be
+    /// synchronously admitted to the cue mailbox before this method returns and before its response
+    /// waiter is spawned. Command-started and command-finished events MUST retain
     /// the same command ID whether admission succeeds or fails.
-    pub fn dispatch_cued_cue_recall(&self, session_revision: u64) -> u64 {
+    pub fn dispatch_cued_cue_recall(&self) -> u64 {
         let command_id = self.next_command_id();
         let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
-        match self.commands.enqueue_cued_cue_recall() {
+        let admission = if self.session_transition_pending() {
+            Err("The session action is still in progress.".to_string())
+        } else {
+            self.commands.enqueue_cued_cue_recall()
+        };
+        match admission {
             Ok(response) => {
                 let ui_events = self.ui_events.clone();
                 self.runtime.spawn(async move {
                     let result = complete_cued_cue_recall_typed(response).await;
-                    let canceled_by_session_replacement = matches!(
-                        &result,
-                        Err(AppCommandError::RecallCanceled(reason))
-                            if reason == "session was replaced"
-                    );
                     let result = result.map_err(|error| match error {
                         AppCommandError::CommandFailed(message) => message,
                         other => other.to_string(),
                     });
-                    let _ = ui_events.send(UiEvent::CueRecallFinished {
-                        command_id,
-                        session_revision,
-                        canceled_by_session_replacement,
-                        result,
-                    });
+                    let _ = ui_events.send(UiEvent::CueRecallFinished { command_id, result });
                 });
             }
             Err(error) => {
                 let _ = self.ui_events.send(UiEvent::CueRecallFinished {
                     command_id,
-                    session_revision,
-                    canceled_by_session_replacement: false,
                     result: Err(error),
                 });
             }
@@ -184,9 +173,8 @@ impl CommandDispatcher {
     /// @cc [owner:mixxorz,label:persistence;ordering] persisted-ui-mutations-before-file-preflight
     /// Every native UI submission that can persistently mutate Scenes, Cue Lists, or Show lockout
     /// MUST use `dispatch_persisted_edit`, which enters this lane. Destructive-session preflight
-    /// queries and save/new/open/template file operations MUST enter this lane without incrementing
-    /// the edit epoch. FIFO completion MUST ensure a retried preflight observes the edit that made
-    /// its earlier result stale.
+    /// queries and save/new/open/template file operations MUST enter this lane. FIFO completion
+    /// MUST ensure preflight observes UI edits submitted before the session action began.
     /// GO recall and latency, connection, discovery, and other network operations MUST NOT be routed
     /// through this lane solely for this ordering guarantee.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
@@ -202,34 +190,33 @@ impl CommandDispatcher {
         command_id
     }
 
-    /// @cc [owner:mixxorz,label:persistence;ordering] persisted-edit-submission-epoch
-    /// This method MUST increment the shared epoch before enqueueing the mutation on the serial
-    /// lane. Queries MUST capture that epoch when submitted so the UI can reject a result when any
-    /// later persisted edit was submitted, including while the query was in flight.
+    /// @cc [owner:mixxorz,label:product;persistence] pending-session-blocks-ui-edits
+    /// New UI document edit submissions MUST be rejected while SessionGuard is pending, including
+    /// file pickers and continued asynchronous file operations. This is UI busy behavior only; it
+    /// does not cancel or revoke work accepted before the session action began.
     pub fn dispatch_persisted_edit<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
-        self.persisted_edit_epoch.fetch_add(1, Ordering::SeqCst);
+        if self.session_transition_pending() {
+            let command_id = self.next_command_id();
+            let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
+            let _ = self.ui_events.send(UiEvent::CommandFinished {
+                command_id,
+                result: Err("The session action is still in progress.".to_string()),
+            });
+            return command_id;
+        }
         self.dispatch_serial(command)
     }
 
-    pub fn persisted_edit_epoch(&self) -> u64 {
-        self.persisted_edit_epoch.load(Ordering::SeqCst)
+    pub(super) fn session_transition_indicator(&self) -> Arc<AtomicBool> {
+        self.session_transition_pending.clone()
     }
 
-    pub fn persisted_session_revision(&self) -> u64 {
-        self.commands.persisted_session_revision()
-    }
-
-    /// @cc [owner:mixxorz,label:product;persistence] guarded-quit-admission
-    /// The quit callback MUST run synchronously under exact persisted-revision admission. A
-    /// mismatch MUST leave it uncalled so the UI can restart preflight or cancel visibly.
-    pub fn admit_guarded_quit(&self, expected_revision: u64, quit: impl FnOnce()) -> bool {
-        self.commands
-            .admit_persisted_session_revision(expected_revision, quit)
-            .is_some()
+    pub(super) fn session_transition_pending(&self) -> bool {
+        self.session_transition_pending.load(Ordering::Relaxed)
     }
 
     pub fn prepare_update_install(&self) -> u64 {
@@ -244,24 +231,14 @@ impl CommandDispatcher {
         command_id
     }
 
-    pub fn disconnect_for_update(
-        &self,
-        plan: UpdateInstallPlan,
-        expected_revision: Option<u64>,
-        expected_edit_epoch: Option<u64>,
-    ) -> u64 {
+    pub fn disconnect_for_update(&self, plan: UpdateInstallPlan) -> u64 {
         let command_id = self.next_command_id();
         let commands = self.commands.clone();
         let ui_events = self.ui_events.clone();
         let _ = ui_events.send(UiEvent::CommandStarted { command_id });
         self.runtime.spawn(async move {
             let result = commands.disconnect_lv1().await.map(|_| plan);
-            let _ = ui_events.send(UiEvent::UpdateShutdownPrepared {
-                command_id,
-                expected_revision,
-                expected_edit_epoch,
-                result,
-            });
+            let _ = ui_events.send(UiEvent::UpdateShutdownPrepared { command_id, result });
         });
         command_id
     }
@@ -272,18 +249,13 @@ impl CommandDispatcher {
 
     pub fn query_show_session_state(&self) -> u64 {
         let query_id = self.next_command_id();
-        let persisted_edit_epoch = self.persisted_edit_epoch();
         let ui_events = self.ui_events.clone();
         self.enqueue_serial(
             query_id,
             Box::new(move |commands| {
                 Box::pin(async move {
                     let result = commands.current_show_session_state().await;
-                    let _ = ui_events.send(UiEvent::SessionStateQueryFinished {
-                        query_id,
-                        persisted_edit_epoch,
-                        result,
-                    });
+                    let _ = ui_events.send(UiEvent::SessionStateQueryFinished { query_id, result });
                     Ok(())
                 })
             }),
@@ -399,139 +371,7 @@ mod tests {
     use crate::show::build_show_actor;
 
     #[tokio::test]
-    async fn query_captures_epoch_before_a_later_persisted_edit_submission() {
-        let event_bus = AppEventBus::default();
-        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
-        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
-        let lifecycle = AppLifecycle::new(
-            event_bus,
-            show.clone(),
-            show_peers,
-            lockout,
-            settings.clone(),
-        );
-        show_task.spawn();
-        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
-        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
-        let (events, mut event_rx) = ui_event_channel();
-        let dispatcher =
-            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-
-        dispatcher.dispatch_serial(|_| async move {
-            let _ = release_rx.await;
-            Ok(())
-        });
-        let query_id = dispatcher.query_show_session_state();
-        dispatcher.dispatch_persisted_edit(|commands| async move {
-            commands
-                .create_cue_list("Later edit".to_string())
-                .await
-                .map(|_| ())
-        });
-        assert_eq!(dispatcher.persisted_edit_epoch(), 1);
-        release_tx.send(()).unwrap();
-
-        let query_epoch = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if let UiEvent::SessionStateQueryFinished {
-                    query_id: completed_id,
-                    persisted_edit_epoch,
-                    ..
-                } = event_rx.recv().await.expect("UI event channel closed")
-                    && completed_id == query_id
-                {
-                    break persisted_edit_epoch;
-                }
-            }
-        })
-        .await
-        .expect("session-state query timed out");
-
-        assert_eq!(query_epoch, 0);
-    }
-
-    #[tokio::test]
-    async fn guarded_quit_calls_closure_only_for_exact_revision() {
-        let event_bus = AppEventBus::default();
-        let event_bus_for_increment = event_bus.clone();
-        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
-        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
-        let lifecycle = AppLifecycle::new(
-            event_bus,
-            show.clone(),
-            show_peers,
-            lockout,
-            settings.clone(),
-        );
-        show_task.spawn();
-        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
-        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
-        let (events, _event_rx) = ui_event_channel();
-        let dispatcher =
-            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        let admitted_calls = calls.clone();
-        assert!(dispatcher.admit_guarded_quit(0, move || {
-            admitted_calls.fetch_add(1, Ordering::SeqCst);
-        }));
-        event_bus_for_increment.note_persisted_session_edit();
-        let rejected_calls = calls.clone();
-        assert!(!dispatcher.admit_guarded_quit(0, move || {
-            rejected_calls.fetch_add(1, Ordering::SeqCst);
-        }));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn owner_edit_published_after_query_creation_is_detectable_before_continuation() {
-        let event_bus = AppEventBus::default();
-        let event_bus_for_publish = event_bus.clone();
-        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
-        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
-        let lifecycle = AppLifecycle::new(
-            event_bus,
-            show.clone(),
-            show_peers,
-            lockout,
-            settings.clone(),
-        );
-        show_task.spawn();
-        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
-        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
-        let (events, mut event_rx) = ui_event_channel();
-        let dispatcher =
-            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
-
-        let query_id = dispatcher.query_show_session_state();
-        let queried_revision = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if let UiEvent::SessionStateQueryFinished {
-                    query_id: completed_id,
-                    result,
-                    ..
-                } = event_rx.recv().await.expect("UI event channel closed")
-                    && completed_id == query_id
-                {
-                    break result
-                        .expect("session-state query failed")
-                        .persisted_session_revision;
-                }
-            }
-        })
-        .await
-        .expect("session-state query timed out");
-
-        event_bus_for_publish.publish(crate::runtime::events::AppEvent::CueLists(
-            crate::cue_lists::CueListsProjectionState::default(),
-        ));
-
-        assert_ne!(queried_revision, dispatcher.persisted_session_revision());
-    }
-
-    #[tokio::test]
-    async fn persisted_edit_queued_before_preflight_completes_before_the_query() {
+    async fn preflight_orders_prior_edits_and_blocks_new_edits_and_go() {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
         let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
@@ -555,18 +395,44 @@ mod tests {
                 .await
                 .map(|_| ())
         });
+        let mut guard = super::super::session_guard::SessionGuard::new(
+            dispatcher.session_transition_indicator(),
+        );
+        guard.request(super::super::session_guard::SessionAction::Open);
+        let rejected_edit = dispatcher.dispatch_persisted_edit(|_| async {
+            panic!("A pending session action must reject document edits before invoking them");
+        });
+        let rejected_go = dispatcher.dispatch_cued_cue_recall();
         let query_id = dispatcher.query_show_session_state();
+        let mut edit_blocked = false;
+        let mut go_blocked = false;
 
         let result = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if let UiEvent::SessionStateQueryFinished {
-                    query_id: completed_id,
-                    result,
-                    ..
-                } = event_rx.recv().await.expect("UI event channel closed")
-                    && completed_id == query_id
-                {
-                    break result;
+                match event_rx.recv().await.expect("UI event channel closed") {
+                    UiEvent::CommandFinished { command_id, result }
+                        if command_id == rejected_edit =>
+                    {
+                        assert_eq!(
+                            result,
+                            Err("The session action is still in progress.".to_string())
+                        );
+                        edit_blocked = true;
+                    }
+                    UiEvent::CueRecallFinished { command_id, result }
+                        if command_id == rejected_go =>
+                    {
+                        assert_eq!(
+                            result.unwrap_err(),
+                            "The session action is still in progress."
+                        );
+                        go_blocked = true;
+                    }
+                    UiEvent::SessionStateQueryFinished {
+                        query_id: completed_id,
+                        result,
+                    } if completed_id == query_id => break result,
+                    _ => {}
                 }
             }
         })
@@ -575,5 +441,10 @@ mod tests {
         .expect("session-state query failed");
 
         assert!(result.show_file_dirty);
+        assert!(edit_blocked);
+        assert!(go_blocked);
+        assert!(dispatcher.session_transition_pending());
+        guard.cancel_pending();
+        assert!(!dispatcher.session_transition_pending());
     }
 }

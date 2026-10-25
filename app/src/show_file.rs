@@ -52,15 +52,14 @@ pub fn backup_folder() -> PathBuf {
 
 fn default_show_folder_from(document_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
     document_dir
-        .or_else(|| home_dir.as_ref().map(|home| home.join("Documents")))
-        .or(home_dir)
+        .or_else(|| home_dir.map(|home| home.join("Documents")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Advanced Show Control")
 }
 
 fn backup_folder_from(data_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
     data_dir
-        .or_else(|| home_dir.clone())
+        .or(home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(app_data_folder_name())
         .join("backups")
@@ -157,7 +156,7 @@ fn prune_old_backups(
         })
         .collect();
 
-    for path in prune_backup_entries(backups, max_backups).into_iter() {
+    for path in prune_backup_entries(backups, max_backups) {
         let _ = fs::remove_file(path);
     }
 
@@ -189,12 +188,7 @@ fn is_generated_backup_prefix(prefix: &str) -> bool {
     let Some((timestamp, collision)) = prefix.split_once("__backup") else {
         return false;
     };
-    is_canonical_decimal(timestamp)
-        && is_canonical_decimal(collision)
-        && collision
-            .as_bytes()
-            .first()
-            .is_some_and(|digit| *digit != b'0')
+    is_canonical_decimal(timestamp) && is_canonical_decimal(collision) && collision != "0"
 }
 
 fn is_canonical_decimal(value: &str) -> bool {
@@ -334,6 +328,21 @@ mod tests {
         assert_eq!(
             default_show_folder_from(None, Some(home.clone())),
             home.join("Documents").join("Advanced Show Control")
+        );
+    }
+
+    #[test]
+    fn default_show_folder_prefers_documents_and_handles_missing_directories() {
+        assert_eq!(
+            default_show_folder_from(
+                Some(PathBuf::from("/documents")),
+                Some(PathBuf::from("/home"))
+            ),
+            PathBuf::from("/documents/Advanced Show Control")
+        );
+        assert_eq!(
+            default_show_folder_from(None, None),
+            PathBuf::from("./Advanced Show Control")
         );
     }
 

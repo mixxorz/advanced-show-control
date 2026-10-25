@@ -44,6 +44,9 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Test debug command behavior
+        run: cargo nextest run -p advanced-show-control --features debug-tools debug_tools::tests
+
       - name: Build native binaries
         run: make build
 
@@ -89,6 +92,9 @@ jobs:
 
       - name: Run app tests
         run: cargo nextest run --workspace
+
+      - name: Test debug command behavior
+        run: cargo nextest run -p advanced-show-control --features debug-tools debug_tools::tests
 
       - name: Build app
         run: cargo build --workspace
