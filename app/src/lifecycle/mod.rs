@@ -7,7 +7,6 @@ use std::future::Future;
 #[cfg(test)]
 use std::pin::Pin;
 use tokio::sync::{Mutex, oneshot};
-use tracing::instrument::WithSubscriber;
 
 use crate::cue_lists::CueListsHandle;
 use crate::fade::{FadeEngineHandle, build_engine};
@@ -391,34 +390,8 @@ impl AppLifecycle {
         }
         let started_runtime = built_runtime.spawn_lv1_and_fade();
 
-        let result = self.spawn_finish_connect_transaction(identity, started_runtime);
-        result
+        self.finish_connect_transaction(identity, started_runtime)
             .await
-            .map_err(|_| "LV1 connection finalizer task was cancelled".to_string())?
-    }
-
-    /// @cc [owner:mixxorz,label:reliability] detached-connect-finalization
-    /// Connection finalization MUST run in its own task so cancellation of the requesting future
-    /// cannot strand an installed candidate or prevent its generation-fenced success/failure
-    /// cleanup; task cancellation MUST surface as an error to a receiver that remains.
-    fn spawn_finish_connect_transaction(
-        &self,
-        identity: crate::connection_state::Lv1SystemIdentity,
-        started_runtime: StartedConnectedRuntime,
-    ) -> oneshot::Receiver<Result<ConnectCommandResult, String>> {
-        let (reply, result) = oneshot::channel();
-        let lifecycle = self.clone();
-        let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        tokio::spawn(
-            async move {
-                let outcome = lifecycle
-                    .finish_connect_transaction(identity, started_runtime)
-                    .await;
-                let _ = reply.send(outcome);
-            }
-            .with_subscriber(subscriber),
-        );
-        result
     }
 
     /// @cc [owner:mixxorz,label:safety;responsiveness] connected-snapshot-required
@@ -2311,12 +2284,11 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .spawn_finish_connect_transaction(
+            .finish_connect_transaction(
                 identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
                 started_runtime,
             )
-            .await
-            .expect("detached finalizer should return a result");
+            .await;
 
         assert!(matches!(
             result,
@@ -2366,12 +2338,11 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .spawn_finish_connect_transaction(
+            .finish_connect_transaction(
                 identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
                 started_runtime,
             )
-            .await
-            .expect("detached finalizer should return a result");
+            .await;
 
         assert!(matches!(
             result,
@@ -2388,84 +2359,6 @@ mod tests {
             rx.await.unwrap().connected_lv1_identity,
             Some(newer_identity)
         );
-    }
-
-    #[tokio::test]
-    async fn cancelled_connect_future_finalizes_after_pending_get_state() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let generation = lifecycle.begin_connecting().await;
-        let (old_lv1_tx, mut old_lv1_rx) = mpsc::channel(1);
-        let old_lv1 = test_actor_handle(old_lv1_tx);
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            event_bus,
-            old_lv1,
-            mpsc::channel(1).0,
-            None,
-        )
-        .await;
-
-        let result_rx = lifecycle.spawn_finish_connect_transaction(
-            identity(Some("old"), Some("LV1-FOH"), "192.0.2.10"),
-            started_runtime,
-        );
-        let outer = tokio::spawn(result_rx);
-        let Lv1Command::GetState {
-            reply: old_state_reply,
-        } = old_lv1_rx.recv().await.unwrap()
-        else {
-            panic!("expected pending GetState");
-        };
-        outer.abort();
-
-        let newer_generation = lifecycle.begin_connecting().await;
-        let newer_identity = identity(Some("new"), Some("LV1-FOH"), "192.0.2.11");
-        let (newer_lv1_tx, _newer_lv1_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(installed_runtime(
-                    newer_generation,
-                    test_actor_handle(newer_lv1_tx),
-                    mpsc::channel(1).0,
-                ),)
-                .await
-                .is_ok(),
-            "newer runtime should install"
-        );
-        assert!(
-            set_show_connection(&lifecycle, newer_generation, newer_identity.clone())
-                .await
-                .accepted
-        );
-
-        old_state_reply
-            .send(disconnected_snapshot())
-            .expect("pending GetState should be released");
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), old_lv1_rx.recv())
-                .await
-                .expect("detached finalizer should release the old runtime")
-                .is_none()
-        );
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                let (reply, rx) = oneshot::channel();
-                lifecycle
-                    .show
-                    .send(ShowCommand::InitialProjectionState { reply })
-                    .await
-                    .unwrap();
-                if rx.await.unwrap().connected_lv1_identity == Some(newer_identity.clone()) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("cancelled connect finalizer should finish without clearing newer identity");
-        assert_eq!(lifecycle.active_generation().await, newer_generation);
     }
 
     #[tokio::test(flavor = "current_thread")]

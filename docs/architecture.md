@@ -85,7 +85,7 @@ The production actor loops outside Fade, Scenes, Show, and Projector were audite
 
 - **LV1:** Connected processing selects between socket reads, writer failures, ping timeout, and mailbox commands, while socket writes run in a dedicated serial writer task. TCP connect and registration attempts are time-bounded and continue returning disconnected mailbox outcomes while pending; registration still must complete before `Connected` is published. Every reconnect delay drains commands with the same disconnected outcomes.
 - **Settings:** Settings replacements and remembered-identity updates remain serial mailbox transactions, so later commands stay queued until persistence, in-memory commit, reply, and any projection complete. Expensive JSON serialization and `StagedFile::prepare` work (temporary-file creation, writing, and `sync_all`) runs on a blocking worker while the actor awaits it. For remembered identity, only the final atomic rename and in-memory commit run inside the existing generation fence; preparation completes before that narrow boundary. Actor construction loads settings before the task starts, so startup loading cannot starve actor inputs.
-- **Lifecycle:** No actor-loop change is warranted because `AppLifecycle` is an orchestration service, not a mailbox or event actor. Its independently callable futures coordinate through narrow transition and discovery locks. Blocking discovery already runs on a blocking worker without holding the transition lock or a domain mailbox, and connection finalization already runs in a detached generation-fenced task.
+- **Lifecycle:** No actor-loop change is warranted because `AppLifecycle` is an orchestration service, not a mailbox or event actor. Its independently callable futures coordinate through narrow transition and discovery locks. Blocking discovery already runs on a blocking worker without holding the transition lock or a domain mailbox, and connection finalization is awaited directly within generation-fenced orchestration; native UI requests remain task-dispatched.
 
 ## Scenes Library and Recall
 
@@ -170,9 +170,8 @@ stable build rather than automatically downgrading the installed app.
 
 **Software Updates…** in the session menu (and macOS application menu) offers explicit download and
 **Update and restart** actions. Restart enters the existing dirty-session Save/Discard/Cancel guard.
-After admission, the host requests lifecycle disconnect off the GPUI thread, then revalidates the
-owner's persisted revision and UI edit-submission epoch before arming a bounded in-memory
-installation plan and quitting. Only
+After the guard continues, the host requests lifecycle disconnect off the GPUI thread, then arms
+the bounded in-memory installation plan and quits. The guard stays busy through this handoff. Only
 this explicit continuation arms installation; ordinary Quit never installs a downloaded update.
 The native quit hook starts Velopack's helper, which waits for the current process to exit before
 applying and restarting. This handoff must happen before AppKit termination, not in code after the
