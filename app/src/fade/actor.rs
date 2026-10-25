@@ -14,7 +14,7 @@ use crate::fade::commands::{
 use crate::fade::events::FadeEvent;
 use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
-use crate::fade::types::{FadeParameter, FadeTarget};
+use crate::fade::types::FadeParameter;
 use crate::lv1::{
     Lv1ActorHandle, Lv1Command, Lv1Connection, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter,
 };
@@ -93,13 +93,12 @@ pub fn build_engine(
     lv1: Lv1ActorHandle,
 ) -> (FadeEngineHandle, FadeEngineTask) {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    let handle = cmd_tx;
     let task = FadeEngineTask {
         connection: Lv1Connection::new(lv1, runtime_generation, generation),
         event_bus,
         cmd_rx,
     };
-    (handle, task)
+    (cmd_tx, task)
 }
 
 /**
@@ -540,7 +539,9 @@ async fn finish_pending_write(
                             });
                         }
                     }
-                    maybe_complete_fade(tick_interval, state, fade_completed_emitted);
+                    if !state.is_active() {
+                        complete_fade(tick_interval, state, fade_completed_emitted);
+                    }
                 })
                 .await;
             if committed.is_none() {
@@ -700,16 +701,6 @@ fn cancel_expired_pending_write(pending: &mut Option<PendingWrite>) {
     }
 }
 
-fn maybe_complete_fade(
-    tick_interval: &mut Option<tokio::time::Interval>,
-    state: &mut EngineState,
-    fade_completed_emitted: &mut bool,
-) {
-    if !state.is_active() {
-        complete_fade(tick_interval, state, fade_completed_emitted);
-    }
-}
-
 fn complete_fade(
     tick_interval: &mut Option<tokio::time::Interval>,
     state: &mut EngineState,
@@ -808,7 +799,6 @@ async fn await_snapshot_with_facts<T>(
         tokio::select! {
             biased;
             result = &mut snapshot => {
-                let result = result;
                 if matches!(&result, Err(AppCommandError::StaleGeneration)) {
                     return result.map(|value| SnapshotWithPings {
                         value,
@@ -1271,7 +1261,12 @@ async fn handle_recall_scene_fade(
                         .channels
                         .iter()
                         .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                        .and_then(|ch| live_value_for_snapshot(ch, target));
+                        .and_then(|ch| match target.parameter {
+                            FadeParameter::FaderDb => Some(ch.gain_db),
+                            FadeParameter::Pan => ch.pan,
+                            FadeParameter::Balance => ch.balance,
+                            FadeParameter::Width => ch.width,
+                        });
                     let start_value = if state.is_waiting_for_readiness() {
                         snapshot_start_value.or(active_start_value)
                     } else {
@@ -1413,7 +1408,6 @@ fn start_readiness_barrier(state: &mut EngineState, install: ReadinessBarrierIns
         "started"
     };
     state.start_or_reset_readiness(
-        generation,
         scene_index,
         scene_name.clone(),
         ping_sequence,
@@ -1436,15 +1430,6 @@ fn start_readiness_barrier(state: &mut EngineState, install: ReadinessBarrierIns
         .filter(|ping| ping.sequence > ping_sequence)
     {
         observe_readiness_ping(state, generation, ping.sequence, ping.observed_at);
-    }
-}
-
-fn live_value_for_snapshot(channel: &crate::lv1::ChannelInfo, target: &FadeTarget) -> Option<f64> {
-    match target.parameter {
-        FadeParameter::FaderDb => Some(channel.gain_db),
-        FadeParameter::Pan => channel.pan,
-        FadeParameter::Balance => channel.balance,
-        FadeParameter::Width => channel.width,
     }
 }
 

@@ -319,11 +319,7 @@ impl ApplicationCommandContext {
         self.settings
             .send(SettingsCommand::ReplaceSettings { settings, reply })
             .await
-            .map_err(|_| {
-                map_app_command_error(AppCommandError::CommandFailed(
-                    "Settings unavailable".to_string(),
-                ))
-            })?;
+            .map_err(|_| "Settings unavailable".to_string())?;
         receive_nested(response).await
     }
 
@@ -685,9 +681,7 @@ pub(crate) async fn complete_cued_cue_recall_typed(
 }
 
 fn cue_lists_unavailable() -> String {
-    map_app_command_error(AppCommandError::CommandFailed(
-        "cue lists are unavailable".to_string(),
-    ))
+    "cue lists are unavailable".to_string()
 }
 
 fn map_app_command_error(error: AppCommandError) -> String {

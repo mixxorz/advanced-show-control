@@ -327,19 +327,6 @@ impl CueListsState {
         Ok(recalled)
     }
 
-    fn clear_invalid_cue(&mut self) -> bool {
-        if let Some(cued_id) = self.document.cued_cue_entry_id
-            && self
-                .active_cue_list()
-                .is_none_or(|list| !list.entries.iter().any(|entry| entry.id == cued_id))
-        {
-            self.document.cued_cue_entry_id = None;
-            true
-        } else {
-            false
-        }
-    }
-
     /// @cc [owner:mixxorz,label:persistence;safety] reconcile-preserves-missing-references
     /// Reconciliation MUST preserve all lists and entries, including entries with missing scene UUIDs.
     /// It MUST clear an invalid active-list selection and its cue, or clear a selected entry that is
@@ -355,9 +342,7 @@ impl CueListsState {
         let active =
             active_id.and_then(|id| self.document.cue_lists.iter().find(|list| list.id == id));
 
-        if let Some(_active_id) = active_id
-            && active.is_none()
-        {
+        if active_id.is_some() && active.is_none() {
             self.document.active_cue_list_id = None;
             result.cued_entry_cleared = self.document.cued_cue_entry_id.take().is_some();
             result.active_cue_list_cleared = true;
@@ -375,8 +360,11 @@ impl CueListsState {
                 scene_internal_id: entry.scene_internal_id,
             });
             self.document.cued_cue_entry_id = None;
-        } else {
-            result.cued_entry_cleared = self.clear_invalid_cue();
+        } else if let Some(cued_id) = self.document.cued_cue_entry_id
+            && active.is_none_or(|list| !list.entries.iter().any(|entry| entry.id == cued_id))
+        {
+            self.document.cued_cue_entry_id = None;
+            result.cued_entry_cleared = true;
         }
 
         result
@@ -714,6 +702,34 @@ mod tests {
 
         assert!(result.cued_entry_cleared);
         assert!(result.cued_entry_cleared_for_missing_scene.is_none());
+        assert_eq!(state.document().cued_cue_entry_id, None);
+    }
+
+    #[test]
+    fn reconciliation_without_an_active_list_clears_only_the_cue() {
+        let list = CueList {
+            id: id(1),
+            name: "Main".to_string(),
+            entries: vec![CueEntry {
+                id: id(2),
+                scene_internal_id: id(10),
+            }],
+        };
+        let mut state = CueListsState::default();
+
+        let result = state.replace_document(
+            CueListDocument {
+                cue_lists: vec![list.clone()],
+                active_cue_list_id: None,
+                cued_cue_entry_id: Some(id(2)),
+            },
+            [id(10)],
+        );
+
+        assert!(!result.active_cue_list_cleared);
+        assert!(result.cued_entry_cleared);
+        assert!(result.cued_entry_cleared_for_missing_scene.is_none());
+        assert_eq!(state.document().cue_lists, vec![list]);
         assert_eq!(state.document().cued_cue_entry_id, None);
     }
 

@@ -520,7 +520,6 @@ impl SettingsView {
                             format_shortcut(shortcut)
                         },
                         format!("Set {label} keyboard shortcut"),
-                        true,
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.begin_capture(action, window, cx)
@@ -599,7 +598,6 @@ impl Render for SettingsView {
                                     "time-12",
                                     "12 hour",
                                     "Use 12 hour time display",
-                                    true,
                                 )
                                 .selected(settings.time_display == TimeDisplayFormat::TwelveHour)
                                 .when(
@@ -619,7 +617,6 @@ impl Render for SettingsView {
                                     "time-24",
                                     "24 hour",
                                     "Use 24 hour time display",
-                                    true,
                                 )
                                 .selected(
                                     settings.time_display == TimeDisplayFormat::TwentyFourHour,
@@ -801,27 +798,18 @@ fn control_button(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
     accessibility_label: impl Into<SharedString>,
-    enabled: bool,
 ) -> BaseButton {
     let label: SharedString = label.into();
     BaseButton::new(id)
         .accessibility_label(accessibility_label)
-        .disabled(!enabled)
         .px_3()
         .py_2()
         .border_1()
         .border_color(rgb(CONSOLE_LINE))
         .bg(rgb(CONSOLE_CONTROL))
-        .text_color(if enabled {
-            rgb(CONSOLE_PRIMARY)
-        } else {
-            rgb(CONSOLE_MUTED)
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(CONSOLE_CONTROL_HOVER)))
-        })
+        .text_color(rgb(CONSOLE_PRIMARY))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(CONSOLE_CONTROL_HOVER)))
         .child(label.to_uppercase())
 }
 

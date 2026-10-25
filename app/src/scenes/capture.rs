@@ -50,10 +50,7 @@ impl ScenesState {
             internal_scene_id,
             scene_index: Some(scene_index),
             scene_name: previous.scene_name.clone(),
-            duration_ms: self
-                .get_scene_config(internal_scene_id)
-                .map(|scene| scene.duration_ms)
-                .unwrap_or(1_000),
+            duration_ms: previous.duration_ms,
             channel_configs: channels
                 .iter()
                 .map(|channel| {
@@ -81,10 +78,7 @@ impl ScenesState {
                 })
                 .collect(),
             scoped_channels,
-            scope_toggles: self
-                .get_scene_config(internal_scene_id)
-                .map(|scene| scene.scope_toggles)
-                .unwrap_or_default(),
+            scope_toggles: previous.scope_toggles,
         };
         Ok(self.upsert_scene_config(snapshot))
     }
@@ -250,6 +244,47 @@ mod tests {
             selected_scene_internal_id: None,
         });
         (state, scene_id)
+    }
+
+    #[test]
+    fn store_preserves_validated_scene_policy_and_unavailable_pan_values() {
+        let (mut state, scene_id) = state_with_supported_and_unknown_channels();
+        let scene = state.get_scene_config_mut(scene_id).unwrap();
+        scene.duration_ms = 2_500;
+        scene.scope_toggles = SceneScopeToggles {
+            faders: true,
+            pan: true,
+        };
+        scene.channel_configs[0].pan = Some(-25.0);
+        scene.scoped_channels = vec![ChannelRef {
+            group: 0,
+            channel: 0,
+        }];
+        let previous = state.get_scene_config(scene_id).unwrap();
+        let channels = [ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Input".to_string(),
+            gain_db: -6.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+
+        assert!(state.store_scene_config(scene_id, &channels).unwrap());
+
+        let stored = state.get_scene_config(scene_id).unwrap();
+        assert_eq!(stored.internal_scene_id, previous.internal_scene_id);
+        assert_eq!(stored.scene_index, previous.scene_index);
+        assert_eq!(stored.scene_name, previous.scene_name);
+        assert_eq!(stored.duration_ms, previous.duration_ms);
+        assert_eq!(stored.scope_toggles, previous.scope_toggles);
+        assert_eq!(stored.scoped_channels, previous.scoped_channels);
+        assert_eq!(stored.channel_configs[0].fader_db, Some(-6.0));
+        assert_eq!(stored.channel_configs[0].pan, Some(-25.0));
+        assert!(!state.store_scene_config(scene_id, &channels).unwrap());
     }
 
     #[test]

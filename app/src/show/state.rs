@@ -26,7 +26,7 @@ impl ShowState {
     /// After documents for a new show have committed, resetting metadata MUST clear lockout, path,
     /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
-        self.clear();
+        self.lockout = false;
         self.reset_file_metadata();
     }
 
@@ -127,10 +127,6 @@ impl ShowState {
             connected_lv1_identity: self.connected_lv1_identity.clone(),
             last_event_at: self.last_event_at.clone(),
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.lockout = false;
     }
 
     /// @cc [owner:mixxorz,label:safety] lockout-change-outcome

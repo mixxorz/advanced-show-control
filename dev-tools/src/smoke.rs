@@ -13,10 +13,7 @@ pub struct SmokeReport {
 impl SmokeReport {
     /// Creates and truncates the authoritative report before any runtime setup is attempted.
     pub fn create(repo_root: &Path) -> io::Result<Self> {
-        Self::create_at(repo_root.join(REPORT_RELATIVE_PATH))
-    }
-
-    fn create_at(path: PathBuf) -> io::Result<Self> {
+        let path = repo_root.join(REPORT_RELATIVE_PATH);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

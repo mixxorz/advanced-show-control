@@ -100,17 +100,10 @@ impl GoSubmissionGuard {
         {
             return self.invalidate();
         }
-        let Some(current_entry_id) = snapshot
-            .current_cue_entry_id
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok())
-        else {
+        let Some(current_entry_id) = snapshot.current_cue_entry_id else {
             return false;
         };
-        let projected_next_entry_id = snapshot
-            .cued_cue_entry_id
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok());
+        let projected_next_entry_id = snapshot.cued_cue_entry_id;
         if projected_next_entry_id == Some(current_entry_id) {
             return false;
         }
@@ -137,13 +130,13 @@ impl GoSubmissionGuard {
     }
 
     fn rebase_from(&mut self, index: usize, first_entry_id: Uuid, snapshot: &AppViewState) {
-        let Some(active_list_id) = snapshot.active_cue_list_id.as_deref() else {
+        let Some(active_list_id) = snapshot.active_cue_list_id else {
             return;
         };
         let Some(entries) = snapshot
             .cue_lists
             .iter()
-            .find(|list| list.id.to_string() == active_list_id)
+            .find(|list| list.id == active_list_id)
             .map(|list| list.entries.as_slice())
         else {
             return;
@@ -271,9 +264,9 @@ mod tests {
         }
         AppViewState {
             state_version: version,
-            current_cue_entry_id: Some(current.to_string()),
-            cued_cue_entry_id: next.map(|id| id.to_string()),
-            active_cue_list_id: Some(list_id.to_string()),
+            current_cue_entry_id: Some(current),
+            cued_cue_entry_id: next,
+            active_cue_list_id: Some(list_id),
             cue_lists: vec![CueList {
                 id: list_id,
                 name: "Main".to_string(),
@@ -306,7 +299,7 @@ mod tests {
         let next_entry_id = Uuid::from_u128(2);
         let old_snapshot = AppViewState {
             state_version: 10,
-            cued_cue_entry_id: Some(recalled_entry_id.to_string()),
+            cued_cue_entry_id: Some(recalled_entry_id),
             ..Default::default()
         };
         let advanced_snapshot = cue_snapshot(11, recalled_entry_id, Some(next_entry_id));
@@ -333,7 +326,7 @@ mod tests {
         let recalled_entry_id = Uuid::from_u128(1);
         let old_snapshot = AppViewState {
             state_version: 10,
-            cued_cue_entry_id: Some(recalled_entry_id.to_string()),
+            cued_cue_entry_id: Some(recalled_entry_id),
             ..Default::default()
         };
         let mut guard = GoSubmissionGuard::default();

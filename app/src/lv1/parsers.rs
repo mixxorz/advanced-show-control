@@ -56,7 +56,6 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
         };
         let balance = match (pan_mode.as_ref(), &args[base + 4]) {
             (Some(crate::lv1::types::PanMode::Stereo), OscArg::Double(v)) => Some(*v),
-            (Some(crate::lv1::types::PanMode::Stereo), _) => None,
             _ => None,
         };
         let pan = match args[base + 18] {

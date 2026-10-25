@@ -261,7 +261,7 @@ impl Runner<'_> {
             .ok_or("create_cue_list returned no cue list")?
             .id;
         self.wait_state("projected smoke cue list", |state| {
-            state.active_cue_list_id.as_deref() == Some(id.to_string().as_str())
+            state.active_cue_list_id == Some(id)
                 && state
                     .cue_lists
                     .iter()

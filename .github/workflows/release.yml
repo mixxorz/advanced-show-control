@@ -8,9 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  APP_NAME: Advanced Show Control
-
 jobs:
   validate-release:
     name: Validate release metadata

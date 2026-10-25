@@ -125,18 +125,7 @@ pub fn build_show_actor(
     ShowActorPeers,
     ShowLockoutReader,
 ) {
-    build_show_actor_with_state(event_bus, ShowState::default())
-}
-
-fn build_show_actor_with_state(
-    event_bus: AppEventBus,
-    state: ShowState,
-) -> (
-    ShowStateHandle,
-    ShowActorTask,
-    ShowActorPeers,
-    ShowLockoutReader,
-) {
+    let state = ShowState::default();
     event_bus.retain(&AppEvent::Show(state.projection_state()));
     let (tx, rx) = mpsc::channel(32);
     let (lockout_tx, lockout_rx) = watch::channel(state.lockout());
@@ -457,7 +446,17 @@ async fn handle_command(
                 reply,
             ));
         }
-        ShowCommand::NewShowFileFromTemplate { path, reply } => {
+        command @ (ShowCommand::NewShowFileFromTemplate { .. }
+        | ShowCommand::GuardedNewShowFileFromTemplate { .. }) => {
+            let (path, expected_persisted_revision, reply) = match command {
+                ShowCommand::NewShowFileFromTemplate { path, reply } => (path, None, reply),
+                ShowCommand::GuardedNewShowFileFromTemplate {
+                    path,
+                    expected_persisted_revision,
+                    reply,
+                } => (path, Some(expected_persisted_revision), reply),
+                _ => unreachable!(),
+            };
             let peers = peers.clone();
             return Some(PendingShowOperation {
                 future: Box::pin(async move {
@@ -476,40 +475,7 @@ async fn handle_command(
                             imported,
                             &lv1,
                             expected_generation,
-                            None,
-                        )
-                        .await
-                    }
-                    .await;
-                    PendingShowCompletion::NewFromTemplate { result, reply }
-                }),
-                dirty_during_wait: false,
-            });
-        }
-        ShowCommand::GuardedNewShowFileFromTemplate {
-            path,
-            expected_persisted_revision,
-            reply,
-        } => {
-            let peers = peers.clone();
-            return Some(PendingShowOperation {
-                future: Box::pin(async move {
-                    let result = async {
-                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
-                        let read_path = path;
-                        let lv1_for_import = lv1.clone();
-                        let imported = tokio::task::spawn_blocking(move || {
-                            load_show_file_for_lv1(&read_path, &lv1_for_import)
-                        })
-                        .await
-                        .map_err(|error| format!("Session template load task failed: {error}"))??;
-                        prepare_load_show_file(
-                            &peers,
-                            ShowFileLoadKind::NewFromTemplate,
-                            imported,
-                            &lv1,
-                            expected_generation,
-                            Some(expected_persisted_revision),
+                            expected_persisted_revision,
                         )
                         .await
                     }
@@ -570,7 +536,17 @@ async fn handle_command(
             )
             .await;
         }
-        ShowCommand::LoadShowFileFromPath { path, reply } => {
+        command @ (ShowCommand::LoadShowFileFromPath { .. }
+        | ShowCommand::GuardedLoadShowFileFromPath { .. }) => {
+            let (path, expected_persisted_revision, reply) = match command {
+                ShowCommand::LoadShowFileFromPath { path, reply } => (path, None, reply),
+                ShowCommand::GuardedLoadShowFileFromPath {
+                    path,
+                    expected_persisted_revision,
+                    reply,
+                } => (path, Some(expected_persisted_revision), reply),
+                _ => unreachable!(),
+            };
             let peers = peers.clone();
             return Some(PendingShowOperation {
                 future: Box::pin(async move {
@@ -589,40 +565,7 @@ async fn handle_command(
                             imported,
                             &lv1,
                             expected_generation,
-                            None,
-                        )
-                        .await
-                    }
-                    .await;
-                    PendingShowCompletion::Load { result, reply }
-                }),
-                dirty_during_wait: false,
-            });
-        }
-        ShowCommand::GuardedLoadShowFileFromPath {
-            path,
-            expected_persisted_revision,
-            reply,
-        } => {
-            let peers = peers.clone();
-            return Some(PendingShowOperation {
-                future: Box::pin(async move {
-                    let result = async {
-                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
-                        let read_path = path.clone();
-                        let lv1_for_import = lv1.clone();
-                        let imported = tokio::task::spawn_blocking(move || {
-                            load_show_file_for_lv1(&read_path, &lv1_for_import)
-                        })
-                        .await
-                        .map_err(|error| format!("Session load task failed: {error}"))??;
-                        prepare_load_show_file(
-                            &peers,
-                            ShowFileLoadKind::Open(path),
-                            imported,
-                            &lv1,
-                            expected_generation,
-                            Some(expected_persisted_revision),
+                            expected_persisted_revision,
                         )
                         .await
                     }

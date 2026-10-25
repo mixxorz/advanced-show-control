@@ -1,4 +1,5 @@
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 use crate::cue_lists::CueList;
@@ -71,9 +72,9 @@ pub struct AppViewState {
     pub scene_settings_clipboard_available: bool,
     pub cue_lists: Vec<CueList>,
     pub session_revision: u64,
-    pub active_cue_list_id: Option<String>,
-    pub current_cue_entry_id: Option<String>,
-    pub cued_cue_entry_id: Option<String>,
+    pub active_cue_list_id: Option<Uuid>,
+    pub current_cue_entry_id: Option<Uuid>,
+    pub cued_cue_entry_id: Option<Uuid>,
     pub last_cue_recall_status: Option<String>,
     pub settings: AppSettings,
     pub updates: crate::updates::UpdateState,
@@ -140,5 +141,9 @@ mod tests {
         assert!(view.scenes.is_empty());
         assert!(view.scene_configs.is_empty());
         assert_eq!(view.settings, AppSettings::default());
+        let serialized = serde_json::to_value(&view).unwrap();
+        for field in ["activeCueListId", "currentCueEntryId", "cuedCueEntryId"] {
+            assert_eq!(serialized.get(field), Some(&serde_json::Value::Null));
+        }
     }
 }

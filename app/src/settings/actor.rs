@@ -221,7 +221,10 @@ fn log_settings_updated(settings: &AppSettings) {
         event = "settings_updated",
         auto_load_last_show_file = settings.auto_load_last_show_file,
         auto_save_sessions = settings.auto_save_sessions,
-        time_display = time_display_label(&settings.time_display),
+        time_display = match settings.time_display {
+            TimeDisplayFormat::TwelveHour => "twelve_hour",
+            TimeDisplayFormat::TwentyFourHour => "twenty_four_hour",
+        },
         fader_override_sensitivity = settings.fader_override_sensitivity,
         enable_extensive_diagnostics = settings.enable_extensive_diagnostics,
         same_scene_recall_enabled = settings.same_scene_recall_enabled,
@@ -231,13 +234,6 @@ fn log_settings_updated(settings: &AppSettings) {
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
     );
-}
-
-fn time_display_label(value: &TimeDisplayFormat) -> &'static str {
-    match value {
-        TimeDisplayFormat::TwelveHour => "twelve_hour",
-        TimeDisplayFormat::TwentyFourHour => "twenty_four_hour",
-    }
 }
 
 fn shortcut_label(shortcut: &KeyboardShortcut) -> String {

@@ -27,9 +27,14 @@ pub struct ProbeLogEntry {
 /// remain `Other`.
 pub fn classify_message(msg: &OscMessage) -> MessageKind {
     let address = msg.address.as_str();
-    if is_fader_gain_address(address) {
+    let mut segments = address.split('/').filter(|segment| !segment.is_empty());
+    if segments.clone().next_back() == Some("Gain")
+        && segments.clone().any(|segment| segment == "Track")
+    {
         MessageKind::Fader
-    } else if is_scene_address(address) {
+    } else if segments.any(|segment| {
+        segment.eq_ignore_ascii_case("Scene") || segment.eq_ignore_ascii_case("CurrentScene")
+    }) {
         MessageKind::Scene
     } else if address == "/handshake" || address == "/device_name" {
         MessageKind::Handshake
@@ -38,23 +43,6 @@ pub fn classify_message(msg: &OscMessage) -> MessageKind {
     } else {
         MessageKind::Other
     }
-}
-
-fn is_fader_gain_address(address: &str) -> bool {
-    let segments: Vec<_> = address
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    segments.last() == Some(&"Gain") && segments.contains(&"Track")
-}
-
-fn is_scene_address(address: &str) -> bool {
-    address
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .any(|segment| {
-            segment.eq_ignore_ascii_case("Scene") || segment.eq_ignore_ascii_case("CurrentScene")
-        })
 }
 
 pub fn format_arg(arg: &OscArg) -> String {
@@ -110,13 +98,7 @@ pub fn entry_for_message(
         address: Some(msg.address.clone()),
         args: msg.args.iter().map(format_arg).collect(),
         frame_size,
-        header_hex: header.map(|bytes| {
-            bytes
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join("")
-        }),
+        header_hex: header.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
         error: None,
     }
 }
@@ -164,6 +146,32 @@ mod tests {
             classify_message(&msg("/Notify/Scenery")),
             MessageKind::Other
         );
+    }
+
+    #[test]
+    fn classification_preserves_segment_boundaries_case_and_precedence() {
+        for address in ["Track/Gain", "/Track//Out/Gain///", "/Scene/Track/Gain"] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Fader);
+        }
+        for address in [
+            "/Scene",
+            "/scene",
+            "/Notify/CURRENTSCENE/",
+            "/Track/Gain/Scene",
+        ] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Scene);
+        }
+        for address in [
+            "",
+            "///",
+            "/track/Gain",
+            "/Track/gain",
+            "/SoundTrack/Gain",
+            "/CurrentScenes",
+            "/ping/",
+        ] {
+            assert_eq!(classify_message(&msg(address)), MessageKind::Other);
+        }
     }
 
     #[test]

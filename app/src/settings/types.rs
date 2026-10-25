@@ -21,6 +21,11 @@ mod tests {
     }
 
     #[test]
+    fn default_settings_are_already_normalized() {
+        assert_eq!(AppSettings::default().normalized(), AppSettings::default());
+    }
+
+    #[test]
     fn partial_settings_use_same_scene_defaults() {
         let settings: AppSettings = serde_json::from_str(r#"{"autoSaveSessions":true}"#)
             .expect("partial settings should deserialize");

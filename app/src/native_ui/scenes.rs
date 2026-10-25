@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 
 use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -185,18 +184,6 @@ impl ScenesView {
         }
         self.snapshot = snapshot;
         cx.notify();
-    }
-
-    fn dispatch(
-        &self,
-        command: impl FnOnce(
-            crate::application::ApplicationCommandContext,
-        )
-            -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
-        + Send
-        + 'static,
-    ) {
-        self.dispatcher.dispatch_persisted_edit(command);
     }
 
     fn commit_duration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -447,11 +434,10 @@ impl ScenesView {
                         unlinked,
                         cx,
                         move |this| {
-                            this.dispatch(move |commands| {
-                                Box::pin(async move {
+                            this.dispatcher
+                                .dispatch_persisted_edit(move |commands| async move {
                                     commands.store_scene_config(scene_id).await.map(|_| ())
-                                })
-                            });
+                                });
                         },
                     ))
                     .child(action_button(
@@ -471,11 +457,10 @@ impl ScenesView {
                         unlinked || !clipboard,
                         cx,
                         move |this| {
-                            this.dispatch(move |commands| {
-                                Box::pin(async move {
+                            this.dispatcher
+                                .dispatch_persisted_edit(move |commands| async move {
                                     commands.paste_scene_settings(scene_id).await.map(|_| ())
-                                })
-                            });
+                                });
                         },
                     )),
             )
@@ -595,11 +580,11 @@ impl ScenesView {
                             .danger()
                             .small()
                             .on_click(cx.listener(move |this, _, _, _| {
-                                this.dispatch(move |commands| {
-                                    Box::pin(async move {
+                                this.dispatcher.dispatch_persisted_edit(
+                                    move |commands| async move {
                                         commands.delete_scene_config(scene_id).await.map(|_| ())
-                                    })
-                                });
+                                    },
+                                );
                             })),
                     ),
             )
@@ -639,14 +624,13 @@ impl ScenesView {
     }
 
     fn dispatch_link(&self, source_id: Uuid, target_index: i32, overwrite: bool) {
-        self.dispatch(move |commands| {
-            Box::pin(async move {
+        self.dispatcher
+            .dispatch_persisted_edit(move |commands| async move {
                 commands
                     .link_scene_config(source_id, target_index, overwrite)
                     .await
                     .map(|_| ())
-            })
-        });
+            });
     }
 
     /// @cc [owner:mixxorz,label:accessibility] overwrite-modal-focus
@@ -814,61 +798,61 @@ impl ScenesView {
                                 faders,
                                 cx,
                                 move |this| {
-                                    this.dispatch(move |commands| {
-                                        Box::pin(async move {
+                                    this.dispatcher.dispatch_persisted_edit(
+                                        move |commands| async move {
                                             commands
                                                 .set_scene_scope_faders_enabled(scene_id, !faders)
                                                 .await
                                                 .map(|_| ())
-                                        })
-                                    });
+                                        },
+                                    );
                                 },
                             ))
                             .child(scope_toggle("scope-pan", "Pan", pan, cx, move |this| {
-                                this.dispatch(move |commands| {
-                                    Box::pin(async move {
+                                this.dispatcher.dispatch_persisted_edit(
+                                    move |commands| async move {
                                         commands
                                             .set_scene_scope_pan_enabled(scene_id, !pan)
                                             .await
                                             .map(|_| ())
-                                    })
-                                });
+                                    },
+                                );
                             })),
                     )
                     .child(
                         div()
                             .flex()
                             .gap_2()
-                            .child(bulk_scope_button(
+                            .child(scope_toggle(
                                 "scope-all",
                                 "All",
                                 all_scoped,
                                 cx,
                                 move |this| {
-                                    this.dispatch(move |commands| {
-                                        Box::pin(async move {
+                                    this.dispatcher.dispatch_persisted_edit(
+                                        move |commands| async move {
                                             commands
                                                 .set_all_channels_scoped(scene_id, true)
                                                 .await
                                                 .map(|_| ())
-                                        })
-                                    });
+                                        },
+                                    );
                                 },
                             ))
-                            .child(bulk_scope_button(
+                            .child(scope_toggle(
                                 "scope-none",
                                 "None",
                                 none_scoped,
                                 cx,
                                 move |this| {
-                                    this.dispatch(move |commands| {
-                                        Box::pin(async move {
+                                    this.dispatcher.dispatch_persisted_edit(
+                                        move |commands| async move {
                                             commands
                                                 .set_all_channels_scoped(scene_id, false)
                                                 .await
                                                 .map(|_| ())
-                                        })
-                                    });
+                                        },
+                                    );
                                 },
                             )),
                     ),
@@ -905,8 +889,8 @@ impl ScenesView {
                                     .when(active, |button| button.primary())
                                     .selected(active)
                                     .on_click(cx.listener(move |this, _, _, _| {
-                                        this.dispatch(move |commands| {
-                                            Box::pin(async move {
+                                        this.dispatcher.dispatch_persisted_edit(
+                                            move |commands| async move {
                                                 commands
                                                     .set_channel_scoped(
                                                         scene_id,
@@ -916,8 +900,8 @@ impl ScenesView {
                                                     )
                                                     .await
                                                     .map(|_| ())
-                                            })
-                                        });
+                                            },
+                                        );
                                     }))
                                 }),
                             ))
@@ -971,16 +955,6 @@ fn scope_toggle(
         .on_click(cx.listener(move |this, _, _, _| handler(this)))
 }
 
-fn bulk_scope_button(
-    id: &'static str,
-    label: &'static str,
-    active: bool,
-    cx: &mut Context<ScenesView>,
-    handler: impl Fn(&ScenesView) + 'static,
-) -> Button {
-    scope_toggle(id, label, active, cx, handler)
-}
-
 fn selected_scene(snapshot: &AppViewState) -> Option<&SceneConfig> {
     let selected = snapshot.selected_scene_internal_id.as_deref()?;
     snapshot
@@ -990,15 +964,15 @@ fn selected_scene(snapshot: &AppViewState) -> Option<&SceneConfig> {
 }
 
 fn cued_scene_id(snapshot: &AppViewState) -> Option<Uuid> {
-    let active_list_id = snapshot.active_cue_list_id.as_deref()?;
-    let cued_entry_id = snapshot.cued_cue_entry_id.as_deref()?;
+    let active_list_id = snapshot.active_cue_list_id?;
+    let cued_entry_id = snapshot.cued_cue_entry_id?;
     snapshot
         .cue_lists
         .iter()
-        .find(|list| list.id.to_string() == active_list_id)?
+        .find(|list| list.id == active_list_id)?
         .entries
         .iter()
-        .find(|entry| entry.id.to_string() == cued_entry_id)
+        .find(|entry| entry.id == cued_entry_id)
         .map(|entry| entry.scene_internal_id)
 }
 
@@ -1077,15 +1051,6 @@ fn normalize_duration(draft: &str) -> Option<u64> {
     Some((seconds.clamp(0.1, 120.0) * 1000.0).round() as u64)
 }
 
-fn step_duration(duration_ms: u64, direction: i64) -> u64 {
-    let next = (duration_ms as i128 + direction as i128 * 1000).max(0) as f64 / 1000.0;
-    if next == 0.0 {
-        0
-    } else {
-        (next.clamp(0.1, 120.0) * 1000.0).round() as u64
-    }
-}
-
 fn preserve_pending_duration_draft(
     pending: Option<(Uuid, u64)>,
     projected: Option<(Uuid, u64)>,
@@ -1105,7 +1070,13 @@ fn duration_update_requires_dispatch(
 }
 
 fn stepped_duration(draft: &str, projected: u64, direction: i64) -> u64 {
-    step_duration(normalize_duration(draft).unwrap_or(projected), direction)
+    let duration_ms = normalize_duration(draft).unwrap_or(projected);
+    let next = (duration_ms as i128 + direction as i128 * 1000).max(0) as f64 / 1000.0;
+    if next == 0.0 {
+        0
+    } else {
+        (next.clamp(0.1, 120.0) * 1000.0).round() as u64
+    }
 }
 
 fn format_duration(duration_ms: u64) -> String {

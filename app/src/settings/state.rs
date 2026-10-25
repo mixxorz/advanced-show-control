@@ -14,13 +14,6 @@ struct PersistedSettings {
     last_connected_lv1: Option<Lv1SystemIdentity>,
 }
 
-impl PersistedSettings {
-    fn normalized(mut self) -> Self {
-        self.settings = self.settings.normalized();
-        self
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsState {
     document: PersistedSettings,
@@ -59,7 +52,7 @@ impl SettingsState {
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
+        StagedSettingsUpdate::prepare(&self.file_path, updated).map(Some)
     }
 
     pub fn last_connected_lv1(&self) -> Option<Lv1SystemIdentity> {
@@ -79,7 +72,7 @@ impl SettingsState {
 
         let mut updated = self.document.clone();
         updated.last_connected_lv1 = Some(identity);
-        StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
+        StagedSettingsUpdate::prepare(&self.file_path, updated).map(Some)
     }
 
     /// @cc [owner:mixxorz,label:data-integrity] publish-settings-after-file
@@ -103,10 +96,10 @@ pub(crate) struct StagedSettingsUpdate {
 }
 
 impl StagedSettingsUpdate {
-    fn prepare(file_path: PathBuf, document: PersistedSettings) -> Result<Self, String> {
+    fn prepare(file_path: &Path, document: PersistedSettings) -> Result<Self, String> {
         let contents = serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-        let file = StagedFile::prepare(&file_path, contents.as_bytes())
+        let file = StagedFile::prepare(file_path, contents.as_bytes())
             .map_err(|err| format!("Failed to stage settings {}: {err}", file_path.display()))?;
         Ok(Self { document, file })
     }
@@ -115,13 +108,14 @@ impl StagedSettingsUpdate {
 fn load_settings_file(file_path: &Path) -> PersistedSettings {
     match std::fs::read_to_string(file_path) {
         Ok(contents) => match serde_json::from_str::<PersistedSettings>(&contents) {
-            Ok(document) => {
+            Ok(mut document) => {
                 tracing::info!(
                     event = "settings_loaded",
                     path = %file_path.display(),
                     "Settings loaded"
                 );
-                document.normalized()
+                document.settings = document.settings.normalized();
+                document
             }
             Err(err) => {
                 tracing::warn!(
@@ -130,7 +124,7 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
                     error = %err,
                     "Settings file could not be read; using defaults"
                 );
-                PersistedSettings::default().normalized()
+                PersistedSettings::default()
             }
         },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -139,7 +133,7 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
                 path = %file_path.display(),
                 "Settings file not found; using defaults"
             );
-            PersistedSettings::default().normalized()
+            PersistedSettings::default()
         }
         Err(err) => {
             tracing::warn!(
@@ -148,7 +142,7 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
                 error = %err,
                 "Settings file could not be opened; using defaults"
             );
-            PersistedSettings::default().normalized()
+            PersistedSettings::default()
         }
     }
 }

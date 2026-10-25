@@ -61,14 +61,13 @@ pub fn startup_auto_connect_target(
     remembered: &Lv1SystemIdentity,
     systems: &[DiscoveredLv1System],
 ) -> Option<Lv1SystemIdentity> {
-    let available: Vec<_> = systems
+    let available = systems
         .iter()
-        .filter(|system| system.status == DiscoveredLv1Status::Available)
-        .collect();
+        .filter(|system| system.status == DiscoveredLv1Status::Available);
 
     if let Some(uuid) = remembered.uuid.as_deref()
         && let Some(system) = available
-            .iter()
+            .clone()
             .find(|system| system.identity.uuid.as_deref() == Some(uuid))
     {
         return Some(system.identity.clone());
@@ -78,9 +77,8 @@ pub fn startup_auto_connect_target(
     if host.is_empty() {
         return None;
     }
-    let mut matches = available
-        .into_iter()
-        .filter(|system| system.identity.host.as_deref().map(str::trim) == Some(host));
+    let mut matches =
+        available.filter(|system| system.identity.host.as_deref().map(str::trim) == Some(host));
     let target = matches.next()?.identity.clone();
     matches.next().is_none().then_some(target)
 }

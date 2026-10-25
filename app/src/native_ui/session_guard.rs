@@ -167,27 +167,20 @@ impl SessionGuard {
                 ));
             }
         };
+        if !status.dirty {
+            self.pending = None;
+            return GuardEffect::Continue {
+                action,
+                expected_persisted_revision: Some(status.persisted_session_revision),
+            };
+        }
         match kind {
-            QueryKind::Preflight if !status.dirty => {
-                self.pending = None;
-                GuardEffect::Continue {
-                    action,
-                    expected_persisted_revision: Some(status.persisted_session_revision),
-                }
-            }
             QueryKind::Preflight => {
                 self.pending.as_mut().expect("pending action exists").phase =
                     GuardPhase::AwaitingChoice {
                         titled: status.path.is_some(),
                     };
                 GuardEffect::Prompt(status.name)
-            }
-            QueryKind::PostSave if !status.dirty => {
-                self.pending = None;
-                GuardEffect::Continue {
-                    action,
-                    expected_persisted_revision: Some(status.persisted_session_revision),
-                }
             }
             QueryKind::PostSave => {
                 self.pending = None;

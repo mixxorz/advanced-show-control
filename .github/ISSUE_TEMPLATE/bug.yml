@@ -55,7 +55,7 @@ body:
     id: diagnostics
     attributes:
       label: Logs Or Diagnostics
-      description: Paste relevant frontend logs, diagnostic log excerpts, screenshots, or GitHub run links.
+      description: Paste relevant application logs, diagnostic log excerpts, screenshots, or GitHub run links.
     validations:
       required: false
   - type: textarea

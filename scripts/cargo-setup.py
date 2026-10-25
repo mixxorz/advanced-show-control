@@ -33,11 +33,12 @@ def repository_paths(directory):
 
 
 def platform_target():
-    machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(platform.machine(), platform.machine())
-    system = {"Darwin": "apple-darwin", "Windows": "pc-windows-msvc", "Linux": "unknown-linux-musl"}
-    if machine not in {"aarch64", "x86_64"} or platform.system() not in system:
+    machine = platform.machine()
+    machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(machine, machine)
+    system = {"Darwin": "apple-darwin", "Windows": "pc-windows-msvc", "Linux": "unknown-linux-musl"}.get(platform.system())
+    if machine not in {"aarch64", "x86_64"} or system is None:
         raise RuntimeError("No supported prebuilt sccache for this platform")
-    return f"{machine}-{system[platform.system()]}"
+    return f"{machine}-{system}"
 
 
 def tool_path(main):

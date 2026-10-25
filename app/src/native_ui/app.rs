@@ -535,10 +535,10 @@ impl AppRoot {
                 expected_persisted_revision,
             } => match (action, expected_persisted_revision) {
                 (SessionAction::New, Some(revision)) => self.guarded_new_show(revision),
-                (SessionAction::NewFromTemplate, Some(revision)) => {
-                    self.guarded_new_show_from_template(revision, cx)
+                (SessionAction::NewFromTemplate, revision) => {
+                    self.new_show_from_template(revision, cx)
                 }
-                (SessionAction::Open, Some(revision)) => self.guarded_open_show(revision, cx),
+                (SessionAction::Open, revision) => self.open_show(revision, cx),
                 (SessionAction::Quit, Some(revision)) => {
                     if !self.dispatcher.admit_guarded_quit(revision, || cx.quit()) {
                         let effect = self.session_guard.borrow_mut().request(SessionAction::Quit);
@@ -546,8 +546,6 @@ impl AppRoot {
                     }
                 }
                 (SessionAction::New, None) => self.new_show(),
-                (SessionAction::NewFromTemplate, None) => self.new_show_from_template(cx),
-                (SessionAction::Open, None) => self.open_show(cx),
                 (SessionAction::Quit, None) => cx.quit(),
                 (SessionAction::UpdateAndRestart, revision) => {
                     self.continue_update_restart(revision, window, cx);
@@ -642,19 +640,7 @@ impl AppRoot {
         });
     }
 
-    pub fn new_show_from_template(&self, cx: &mut Context<Self>) {
-        self.new_show_from_template_with_revision(None, cx);
-    }
-
-    fn guarded_new_show_from_template(
-        &self,
-        expected_persisted_revision: u64,
-        cx: &mut Context<Self>,
-    ) {
-        self.new_show_from_template_with_revision(Some(expected_persisted_revision), cx);
-    }
-
-    fn new_show_from_template_with_revision(
+    fn new_show_from_template(
         &self,
         expected_persisted_revision: Option<u64>,
         cx: &mut Context<Self>,
@@ -703,19 +689,7 @@ impl AppRoot {
         .detach();
     }
 
-    pub fn open_show(&self, cx: &mut Context<Self>) {
-        self.open_show_with_revision(None, cx);
-    }
-
-    fn guarded_open_show(&self, expected_persisted_revision: u64, cx: &mut Context<Self>) {
-        self.open_show_with_revision(Some(expected_persisted_revision), cx);
-    }
-
-    fn open_show_with_revision(
-        &self,
-        expected_persisted_revision: Option<u64>,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_show(&self, expected_persisted_revision: Option<u64>, cx: &mut Context<Self>) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1006,7 +980,7 @@ impl AppRoot {
     }
 
     fn on_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
-        if !window.has_active_prompt() && !self.action_blocked(window, cx) {
+        if !self.action_blocked(window, cx) {
             let _response = window.prompt(
                 PromptLevel::Info,
                 "Advanced Show Control",
@@ -1071,9 +1045,7 @@ impl AppRoot {
     }
 
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shell.read(cx).shortcut_capture_active(cx) {
-            cx.propagate();
-        } else if !self.action_blocked(window, cx) {
+        if !self.action_blocked(window, cx) {
             self.request_session_action(SessionAction::Quit, window, cx);
         }
     }
@@ -1086,21 +1058,21 @@ impl AppRoot {
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let connection_modal_open = self.connection.borrow().is_visible();
         let custom_modal_open = self.shell.read(cx).modal_open(cx);
-        if connection_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
+        let key = normalized_physical_key(&event.keystroke);
+        if connection_modal_open && key == "Escape" {
             self.connection.borrow_mut().close();
             self.restore_connection_focus(window, cx);
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        if custom_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
+        if custom_modal_open && key == "Escape" {
             self.shell.update(cx, |shell, cx| {
                 shell.dismiss_modal(window, cx);
             });
             cx.stop_propagation();
             return;
         }
-        let key = normalized_physical_key(&event.keystroke);
         if !connection_modal_open
             && !custom_modal_open
             && !window.has_active_dialog(cx)

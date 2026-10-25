@@ -135,15 +135,6 @@ impl ScenesState {
         &self.scene_configs
     }
 
-    pub(crate) fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {
-        self.last_scene_list.as_ref().and_then(|scene_list| {
-            scene_list
-                .iter()
-                .find(|scene| scene.index == index)
-                .cloned()
-        })
-    }
-
     pub(crate) fn get_scene_config_mut(
         &mut self,
         internal_scene_id: uuid::Uuid,
@@ -178,7 +169,11 @@ impl ScenesState {
         &mut self,
         internal_scene_id: uuid::Uuid,
     ) -> Result<bool, String> {
-        if self.get_scene_config(internal_scene_id).is_none() {
+        if !self
+            .scene_configs
+            .iter()
+            .any(|scene| scene.internal_scene_id == internal_scene_id)
+        {
             return Err("Scene config not found".to_string());
         }
         let next = Some(internal_scene_id.to_string());
@@ -297,7 +292,14 @@ impl ScenesState {
         overwrite_existing: bool,
     ) -> Result<bool, String> {
         let target = self
-            .scene_list_entry_for_index(target_scene_index)
+            .last_scene_list
+            .as_ref()
+            .and_then(|scenes| {
+                scenes
+                    .iter()
+                    .find(|scene| scene.index == target_scene_index)
+            })
+            .cloned()
             .ok_or_else(|| "Link blocked: target scene not found".to_string())?;
         self.link_scene_config(source_internal_scene_id, &target, overwrite_existing)
     }
@@ -321,35 +323,27 @@ impl ScenesState {
     }
 
     pub(crate) fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
-        match self.last_scene_list.as_ref() {
-            None => {
-                self.last_scene_list = Some(scene_list);
-            }
-            Some(previous) if previous == &scene_list => {
-                self.last_scene_list = Some(scene_list);
-            }
-            Some(_) => {
-                self.last_scene_list = Some(scene_list);
-                self.scene_list_edit_suppressed_until =
-                    Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
-            }
+        if self
+            .last_scene_list
+            .as_ref()
+            .is_some_and(|previous| previous != &scene_list)
+        {
+            self.scene_list_edit_suppressed_until = Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
         }
+        self.last_scene_list = Some(scene_list);
     }
 
     pub(crate) fn observe_and_align_scene_list(
         &mut self,
-        align_configs: bool,
         generation: u64,
         scene_list: Vec<SceneListEntry>,
         now: Instant,
     ) -> bool {
         let previous = self.scene_configs.clone();
         self.observe_scene_list(scene_list.clone(), now);
-        if align_configs {
-            self.scene_configs =
-                align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
-            self.ready_generation = Some(generation);
-        }
+        self.scene_configs =
+            align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
+        self.ready_generation = Some(generation);
         previous != self.scene_configs
     }
 
@@ -368,14 +362,6 @@ impl ScenesState {
         self.scene_list_edit_suppressed_until
             .map(|deadline| now < deadline)
             .unwrap_or(false)
-    }
-
-    pub(crate) fn accepts(
-        &mut self,
-        current_scene: &SceneState,
-        same_scene_repeat_delay: Duration,
-    ) -> bool {
-        self.accepts_at(current_scene, Instant::now(), same_scene_repeat_delay)
     }
 
     pub(crate) fn accepts_at(
@@ -1029,7 +1015,6 @@ mod tests {
         state.select_scene_config(source_id).unwrap();
         state.copy_scene_settings(source_id).unwrap();
         state.observe_and_align_scene_list(
-            true,
             0,
             vec![SceneListEntry {
                 index: 1,

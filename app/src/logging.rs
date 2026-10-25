@@ -23,14 +23,6 @@ use crate::settings::{AppSettings, SettingsEvent};
 
 const UI_SINK_TARGET: &str = "advanced_show_control::logging::ui_sink";
 
-fn default_env_filter() -> tracing_subscriber::EnvFilter {
-    tracing_subscriber::EnvFilter::new(default_env_filter_directive())
-}
-
-fn default_env_filter_directive() -> &'static str {
-    "debug"
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiLogEvent {
     pub severity: LogSeverity,
@@ -151,7 +143,7 @@ pub fn init_logging(app_config_dir: &Path) -> Result<LoggingRuntime, Box<dyn Err
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| default_env_filter());
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
 
     let diagnostic_file_gate = DiagnosticFileGate::bootstrap_debug();
 
@@ -222,10 +214,14 @@ where
             ANSI_RESET,
         )
         .and_then(|_| {
-            if let Some(message) = stdout_osc_message(event) {
-                write!(writer, "{message}")
-            } else if let Some(message) = stdout_event.message.as_deref() {
-                write!(writer, "{message}")
+            if let Some(message) = stdout_event.message.as_deref() {
+                if stdout_event.event_name.as_deref() == Some("osc_message")
+                    && let Some(direction) = stdout_event.direction.as_deref()
+                {
+                    write!(writer, "OSC {} {message}", direction.to_uppercase())
+                } else {
+                    write!(writer, "{message}")
+                }
             } else {
                 ctx.field_format().format_fields(writer.by_ref(), event)
             }
@@ -236,9 +232,10 @@ where
 }
 
 fn stdout_timestamp() -> String {
-    let millis = crate::time::current_timestamp_millis()
-        .parse::<u128>()
-        .unwrap_or_default();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     let millis_in_day = millis % 86_400_000;
     let hours = millis_in_day / 3_600_000;
     let minutes = (millis_in_day % 3_600_000) / 60_000;
@@ -263,6 +260,8 @@ fn stdout_category(target: &str) -> &str {
 
 #[derive(Default)]
 struct StdoutEvent {
+    event_name: Option<String>,
+    direction: Option<String>,
     message: Option<String>,
     fields: Vec<(String, String)>,
 }
@@ -291,8 +290,11 @@ impl StdoutEvent {
 
 impl tracing::field::Visit for StdoutEvent {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == "message" {
-            self.message = Some(value.to_string());
+        match field.name() {
+            "event" => self.event_name = Some(value.to_string()),
+            "direction" => self.direction = Some(value.to_string()),
+            "message" => self.message = Some(value.to_string()),
+            _ => {}
         }
         self.fields
             .push((field.name().to_string(), value.to_string()));
@@ -300,8 +302,10 @@ impl tracing::field::Visit for StdoutEvent {
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         let value = format!("{value:?}");
-        if field.name() == "message" {
-            self.message = Some(trim_debug_string_quotes(&value));
+        match field.name() {
+            "event" => self.event_name = Some(trim_debug_string_quotes(&value)),
+            "message" => self.message = Some(trim_debug_string_quotes(&value)),
+            _ => {}
         }
         self.fields.push((field.name().to_string(), value));
     }
@@ -321,54 +325,6 @@ fn trim_debug_string_quotes(value: &str) -> String {
         .and_then(|value| value.strip_suffix('"'))
         .unwrap_or(value)
         .to_string()
-}
-
-fn stdout_osc_message(event: &Event<'_>) -> Option<String> {
-    let mut visitor = StdoutOscMessageVisitor::default();
-    event.record(&mut visitor);
-    if visitor.event_name.as_deref() == Some("osc_message") {
-        match (visitor.direction.as_deref(), visitor.message) {
-            (Some(direction), Some(message)) => {
-                Some(format!("OSC {} {message}", direction.to_uppercase()))
-            }
-            (_, message) => message,
-        }
-    } else {
-        None
-    }
-}
-
-#[derive(Default)]
-struct StdoutOscMessageVisitor {
-    event_name: Option<String>,
-    direction: Option<String>,
-    message: Option<String>,
-}
-
-impl tracing::field::Visit for StdoutOscMessageVisitor {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.record_field(field.name(), value.to_string());
-    }
-
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "event" || field.name() == "message" {
-            self.record_field(
-                field.name(),
-                trim_debug_string_quotes(&format!("{value:?}")),
-            );
-        }
-    }
-}
-
-impl StdoutOscMessageVisitor {
-    fn record_field(&mut self, field_name: &str, value: String) {
-        match field_name {
-            "event" => self.event_name = Some(value),
-            "direction" => self.direction = Some(value),
-            "message" => self.message = Some(value),
-            _ => {}
-        }
-    }
 }
 
 /// @cc [owner:mixxorz,label:privacy;observability] frontend-log-payload
@@ -547,6 +503,37 @@ mod tests {
                 "DEBUG │ [TIME] [tests] OSC RX /CurrentScene │ event=\"osc_message\" direction=\"rx\" osc_address=\"/CurrentScene\"\n",
             )
         );
+    }
+
+    #[test]
+    fn stdout_formatter_preserves_osc_message_and_direction_field_rules() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer_capture = captured.clone();
+        let subscriber = registry().with(
+            fmt::layer()
+                .event_format(BracketedFormat)
+                .with_writer(move || CapturedWriter(writer_capture.clone())),
+        );
+
+        with_default(subscriber, || {
+            tracing::debug!(event = ?"osc_message", direction = "tx", message = ?"Quoted");
+            tracing::debug!(event = "osc_message", "Without direction");
+            tracing::debug!(event = "other_event", direction = "rx", "Ordinary message");
+            tracing::debug!(event = "osc_message", direction = ?"rx", "Debug direction");
+        });
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let output = normalize_stdout_output(&output);
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), 4);
+        for (line, expected) in lines.iter().zip([
+            "OSC TX Quoted",
+            "Without direction",
+            "Ordinary message",
+            "Debug direction",
+        ]) {
+            assert!(line.contains(&format!("[tests] {expected} │")), "{line}");
+        }
     }
 
     fn normalize_stdout_output(output: &str) -> String {

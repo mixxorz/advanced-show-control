@@ -1047,11 +1047,10 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let steps = pan_family_smoke_steps();
     for stage in ["together", "alternating"] {
         for loop_index in 1..=PAN_FAMILY_SMOKE_DURATIONS_MS.len() {
-            let loop_steps: Vec<_> = steps
+            for step in steps
                 .iter()
                 .filter(|step| step.stage == stage && step.loop_index == loop_index)
-                .collect();
-            for step in loop_steps {
+            {
                 let label = format!(
                     "{}-loop-{}-{}-{}ms",
                     step.stage, step.loop_index, step.position.label, step.duration_ms
@@ -1127,7 +1126,7 @@ async fn run_pan_family_smoke_step(
     step: &PanFamilySmokeStep,
     label: &str,
 ) -> AppResult<()> {
-    drain_pending_smoke_events(fade_events);
+    while fade_events.try_recv().is_ok() {}
 
     let targets: Vec<_> = config
         .targets
@@ -1378,10 +1377,6 @@ async fn run_pan_family_smoke_step(
     Ok(())
 }
 
-fn drain_pending_smoke_events(fade_events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
-    while fade_events.try_recv().is_ok() {}
-}
-
 fn write_smoke_log_entry(path: &std::path::Path, mut entry: serde_json::Value) -> AppResult<()> {
     use std::io::Write;
 
@@ -1425,7 +1420,6 @@ const INITIAL_MUTE_SETTLE_MS: u64 = 150;
 
 async fn wait_for_channels_with_mute_settle(
     lv1: &Lv1ActorHandle,
-    _event_bus: &AppEventBus,
     events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     timeout_ms: u64,
 ) -> AppResult<Vec<ChannelInfo>> {
@@ -1599,11 +1593,11 @@ async fn restore_vegas_snapshot(lv1: &impl VegasLv1, original: &[ChannelInfo]) -
     }
 }
 
-async fn fail_vegas_with_restoration(
+async fn fail_vegas_with_restoration<T>(
     lv1: &impl VegasLv1,
     original: &[ChannelInfo],
     failure: String,
-) -> AppResult<()> {
+) -> AppResult<T> {
     match restore_vegas_snapshot(lv1, original).await {
         Ok(()) => Err(failure.into()),
         Err(restore_error) => Err(format!("{failure}; {restore_error}").into()),
@@ -1680,7 +1674,7 @@ where
                 return Ok(VegasSetupOutcome::CancelledBeforeAnimation);
             }
             Err(err) => {
-                fail_vegas_with_restoration(
+                return fail_vegas_with_restoration(
                     lv1,
                     original,
                     format!(
@@ -1688,8 +1682,7 @@ where
                         ch.group, ch.channel
                     ),
                 )
-                .await?;
-                unreachable!("failed Vegas setup cannot return success")
+                .await;
             }
         }
     }
@@ -1709,13 +1702,8 @@ where
             Ok(VegasSetupOutcome::CancelledBeforeAnimation)
         }
         Err(err) => {
-            fail_vegas_with_restoration(
-                lv1,
-                original,
-                format!("initial mute flush failed ({err})"),
-            )
-            .await?;
-            unreachable!("failed Vegas setup cannot return success")
+            fail_vegas_with_restoration(lv1, original, format!("initial mute flush failed ({err})"))
+                .await
         }
     }
 }
@@ -1762,7 +1750,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     .map_err(|_| "timed out waiting for LV1 connection")?;
 
     let mut original: Vec<ChannelInfo> =
-        wait_for_channels_with_mute_settle(&lv1, &event_bus, &mut events, timeout_ms).await?;
+        wait_for_channels_with_mute_settle(&lv1, &mut events, timeout_ms).await?;
     original.sort_by_key(|ch| (ch.group, ch.channel));
     println!("[vegas] captured {} faders", original.len());
 
@@ -2272,7 +2260,7 @@ mod tests {
             .unwrap();
         assert!(baseline[0].muted);
 
-        let snapshot = wait_for_channels_with_mute_settle(&handle, &event_bus, &mut events, 2_000);
+        let snapshot = wait_for_channels_with_mute_settle(&handle, &mut events, 2_000);
         tokio::pin!(snapshot);
         tokio::select! {
             _ = &mut snapshot => panic!("settle completed before the late mute notification"),
@@ -2427,6 +2415,29 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[tokio::test]
+    async fn vegas_failure_keeps_original_error_and_restoration_failures() {
+        let lv1 = FakeVegasLv1 {
+            drop_gain_replies: [(0, 1)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let error = fail_vegas_with_restoration::<()>(
+            &lv1,
+            &vegas_channels(),
+            "initial mute failed".to_string(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(
+            error,
+            "initial mute failed; failed to restore Vegas snapshot: gain restore reply dropped for 0:1"
+        );
+        assert_eq!(lv1.commands.lock().await.len(), 6);
     }
 
     #[tokio::test]

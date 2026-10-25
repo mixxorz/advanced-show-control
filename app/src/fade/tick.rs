@@ -83,18 +83,6 @@ impl ActiveTarget {
         self.paused_since.is_some()
     }
 
-    fn is_fader(&self) -> bool {
-        self.key.parameter == FadeParameter::FaderDb
-    }
-
-    fn override_threshold(&self) -> Option<f64> {
-        match self.key.parameter {
-            FadeParameter::FaderDb => Some(OVERRIDE_THRESHOLD_POS),
-            FadeParameter::Pan => Some(PAN_OVERRIDE_THRESHOLD),
-            FadeParameter::Balance | FadeParameter::Width => None,
-        }
-    }
-
     /// @cc [owner:mixxorz,label:product] parameter-interpolation
     /// `value_at` MUST clamp normalized elapsed progress to `[0, 1]`, return the finite exact target
     /// for zero duration, interpolate faders in measured fader-position space, and interpolate Pan,
@@ -106,7 +94,7 @@ impl ActiveTarget {
 
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
-        if self.is_fader() {
+        if self.key.parameter == FadeParameter::FaderDb {
             interpolate(self.start_value, self.target_value, t, self.curve)
         } else {
             let t = t.clamp(0.0, 1.0);
@@ -124,14 +112,16 @@ impl ActiveTarget {
     /// space, Pan MUST compare native values, and Balance and Width MUST never independently declare
     /// an override.
     pub(crate) fn is_override(&self, reported_value: f64) -> bool {
-        if self.is_fader() {
-            let reported_pos = db_to_pos(reported_value);
-            let expected_pos = db_to_pos(self.expected_value);
-            (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
-        } else if let Some(threshold) = self.override_threshold() {
-            (reported_value - self.expected_value).abs() >= threshold
-        } else {
-            false
+        match self.key.parameter {
+            FadeParameter::FaderDb => {
+                let reported_pos = db_to_pos(reported_value);
+                let expected_pos = db_to_pos(self.expected_value);
+                (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+            }
+            FadeParameter::Pan => {
+                (reported_value - self.expected_value).abs() >= PAN_OVERRIDE_THRESHOLD
+            }
+            FadeParameter::Balance | FadeParameter::Width => false,
         }
     }
 

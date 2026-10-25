@@ -579,7 +579,7 @@ impl RecallCoordinator {
         } else {
             let same_scene_repeat_delay =
                 Duration::from_millis(settings.same_scene_recall_threshold_ms);
-            (!recall_state.accepts(&observation.scene, same_scene_repeat_delay))
+            (!recall_state.accepts_at(&observation.scene, Instant::now(), same_scene_repeat_delay))
                 .then(|| "scene not accepted by recall policy".to_string())
         };
         if let Some(reason) = skipped_reason.as_deref()
@@ -643,48 +643,30 @@ impl RecallCoordinator {
         } else {
             decide_scene_recall(RecallPolicyInput {
                 recalled_scene: observation.scene.clone(),
-                lv1_snapshot: lv1_snapshot.clone(),
+                lv1_snapshot,
                 lockout: lockout.current(),
-                scene_config: scene_config.clone(),
+                scene_config,
             })
         };
         let blocked = matches!(&decision, RecallPolicyDecision::Blocked { .. });
         let scene_label = scene_label(&observation.scene);
 
         match decision {
-            RecallPolicyDecision::Start(initial_fade_config) => {
-                let (fade_config, readiness, queued_readiness) = if let Some(queue_readiness) =
-                    queue_readiness
-                {
-                    let current_lockout = lockout.current();
-                    let RecallPolicyDecision::Start(fade_config) =
-                        decide_scene_recall(RecallPolicyInput {
-                            recalled_scene: observation.scene.clone(),
-                            lv1_snapshot,
-                            lockout: current_lockout,
-                            scene_config,
-                        })
-                    else {
-                        self.cancel(
-                            if current_lockout {
-                                "lockout was enabled"
-                            } else {
-                                "LV1 recall readiness was lost"
-                            },
-                            true,
-                        );
+            RecallPolicyDecision::Start(fade_config) => {
+                let (readiness, queued_readiness) = if let Some(queue_readiness) = queue_readiness {
+                    if lockout.current() {
+                        self.cancel("lockout was enabled", true);
                         return None;
-                    };
+                    }
                     let Some((readiness, completion)) =
                         self.prepare_readiness(queue_readiness, Instant::now())
                     else {
                         self.cancel("LV1 recall readiness was lost", true);
                         return None;
                     };
-                    (fade_config, readiness, Some((queue_readiness, completion)))
+                    (readiness, Some((queue_readiness, completion)))
                 } else {
                     (
-                        initial_fade_config,
                         RecallReadinessRequest::detached(Instant::now() + RECALL_READINESS_TIMEOUT),
                         None,
                     )

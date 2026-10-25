@@ -345,15 +345,6 @@ impl CueListsView {
             .map_or(&[], |list| list.entries.as_slice())
     }
 
-    fn dispatch(
-        &self,
-        command: impl FnOnce(crate::application::ApplicationCommandContext) -> CommandFuture
-        + Send
-        + 'static,
-    ) -> u64 {
-        self.dispatcher.dispatch_persisted_edit(command)
-    }
-
     pub fn command_finished(
         &mut self,
         command_id: u64,
@@ -499,28 +490,30 @@ impl CueListsView {
         let index = editor.marker.as_ref().map(CueMarker::index);
         let order: Vec<_> = self.active_entries().iter().map(|entry| entry.id).collect();
         let command_id = match mode {
-            CueEditorMode::Edit(entry_id) => self.dispatch(move |commands| {
-                Box::pin(async move {
-                    commands
-                        .edit_cue_entry(list_id, entry_id, scene_id, session_revision)
-                        .await
-                        .map(|_| ())
-                })
-            }),
-            CueEditorMode::Insert => self.dispatch(move |commands| {
-                Box::pin(async move {
-                    commands
-                        .insert_cue_entry(
-                            list_id,
-                            scene_id,
-                            index.unwrap_or(0),
-                            order,
-                            session_revision,
-                        )
-                        .await
-                        .map(|_| ())
-                })
-            }),
+            CueEditorMode::Edit(entry_id) => {
+                self.dispatcher
+                    .dispatch_persisted_edit(move |commands| async move {
+                        commands
+                            .edit_cue_entry(list_id, entry_id, scene_id, session_revision)
+                            .await
+                            .map(|_| ())
+                    })
+            }
+            CueEditorMode::Insert => {
+                self.dispatcher
+                    .dispatch_persisted_edit(move |commands| async move {
+                        commands
+                            .insert_cue_entry(
+                                list_id,
+                                scene_id,
+                                index.unwrap_or(0),
+                                order,
+                                session_revision,
+                            )
+                            .await
+                            .map(|_| ())
+                    })
+            }
         };
         if let Some(editor) = &mut self.cue_editor {
             editor.pending = Some(command_id);
@@ -543,12 +536,18 @@ impl CueListsView {
             return;
         };
         let command_id = match editor {
-            NameEditor::Create => self.dispatch(move |commands| {
-                Box::pin(async move { commands.create_cue_list(name).await.map(|_| ()) })
-            }),
-            NameEditor::Rename(id) => self.dispatch(move |commands| {
-                Box::pin(async move { commands.rename_cue_list(id, name).await.map(|_| ()) })
-            }),
+            NameEditor::Create => {
+                self.dispatcher
+                    .dispatch_persisted_edit(move |commands| async move {
+                        commands.create_cue_list(name).await.map(|_| ())
+                    })
+            }
+            NameEditor::Rename(id) => {
+                self.dispatcher
+                    .dispatch_persisted_edit(move |commands| async move {
+                        commands.rename_cue_list(id, name).await.map(|_| ())
+                    })
+            }
         };
         self.pending_manage_command = Some((command_id, ManageCommand::Name(editor)));
         cx.notify();
@@ -558,10 +557,12 @@ impl CueListsView {
         if self.manager_controls_inert() {
             return;
         }
-        if self.snapshot.active_cue_list_id.as_deref() != Some(id.to_string().as_str()) {
-            let command_id = self.dispatch(move |commands| {
-                Box::pin(async move { commands.set_active_cue_list(Some(id)).await.map(|_| ()) })
-            });
+        if self.snapshot.active_cue_list_id != Some(id) {
+            let command_id = self
+                .dispatcher
+                .dispatch_persisted_edit(move |commands| async move {
+                    commands.set_active_cue_list(Some(id)).await.map(|_| ())
+                });
             self.pending_manage_command = Some((command_id, ManageCommand::Activate));
         }
         cx.notify();
@@ -592,9 +593,10 @@ impl CueListsView {
         {
             return;
         }
-        self.dispatch(move |commands| {
-            Box::pin(async move { commands.cue_entry(Some(entry_id)).await.map(|_| ()) })
-        });
+        self.dispatcher
+            .dispatch_persisted_edit(move |commands| async move {
+                commands.cue_entry(Some(entry_id)).await.map(|_| ())
+            });
         self.selected_entry_id = None;
         cx.notify();
     }
@@ -782,8 +784,7 @@ impl CueListsView {
                 .child("No active cue list.")
                 .into_any_element();
         };
-        let projected_next_entry_id =
-            projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref());
+        let projected_next_entry_id = self.snapshot.cued_cue_entry_id;
         let pending_go_count = self.go_submissions.borrow().presentation_pending_count();
         let pending_entry_ids =
             pending_cue_entry_ids(&list.entries, projected_next_entry_id, pending_go_count);
@@ -872,14 +873,14 @@ impl CueListsView {
         {
             marker.record_insert(index);
         }
-        let command_id = self.dispatch(move |commands| {
-            Box::pin(async move {
+        let command_id = self
+            .dispatcher
+            .dispatch_persisted_edit(move |commands| async move {
                 commands
                     .add_scene_to_active_cue_list(scene_id, index)
                     .await
                     .map(|_| ())
-            })
-        });
+            });
         if let Some(editor) = &mut self.cue_editor {
             editor.drag_commands.insert(command_id);
         }
@@ -915,9 +916,11 @@ impl CueListsView {
             }
         }
         if changed {
-            let command_id = self.dispatch(move |commands| {
-                Box::pin(async move { commands.reorder_cue_entries(ids).await.map(|_| ()) })
-            });
+            let command_id = self
+                .dispatcher
+                .dispatch_persisted_edit(move |commands| async move {
+                    commands.reorder_cue_entries(ids).await.map(|_| ())
+                });
             if let Some(editor) = &mut self.cue_editor {
                 editor.drag_commands.insert(command_id);
             }
@@ -1280,8 +1283,7 @@ impl CueListsView {
                 scene.scene_index == Some(current.index) && scene.scene_name == current.name
             })
         });
-        let current =
-            projected_entry_id(self.snapshot.current_cue_entry_id.as_deref()) == Some(entry.id);
+        let current = self.snapshot.current_cue_entry_id == Some(entry.id);
         let arrow = cue_arrow_state(current, next, pending);
         let selected = self.selected_entry_id == Some(entry.id);
         let scene_name = scene.map_or("Missing scene", |scene| scene.scene_name.as_str());
@@ -1478,11 +1480,11 @@ impl CueListsView {
                                     if this.editor_order_pending() {
                                         return;
                                     }
-                                    this.dispatch(move |commands| {
-                                        Box::pin(async move {
+                                    this.dispatcher.dispatch_persisted_edit(
+                                        move |commands| async move {
                                             commands.remove_cue_entry(entry_id).await.map(|_| ())
-                                        })
-                                    });
+                                        },
+                                    );
                                     if this.selected_entry_id == Some(entry_id) {
                                         this.selected_entry_id = None;
                                     }
@@ -1606,8 +1608,7 @@ impl CueListsView {
 
     fn render_manage_row(&self, list: CueList, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let manager_inert = self.manager_controls_inert();
-        let active =
-            self.snapshot.active_cue_list_id.as_deref() == Some(list.id.to_string().as_str());
+        let active = self.snapshot.active_cue_list_id == Some(list.id);
         let id = list.id;
         let editor = NameEditor::Rename(id);
         let renaming = self.name_editor == Some(editor);
@@ -1660,11 +1661,11 @@ impl CueListsView {
                             return;
                         }
                         if let Some(ids) = reordered_ids(&this.snapshot.cue_lists, from, id) {
-                            let command_id = this.dispatch(move |commands| {
-                                Box::pin(async move {
+                            let command_id = this.dispatcher.dispatch_persisted_edit(
+                                move |commands| async move {
                                     commands.reorder_cue_lists(ids).await.map(|_| ())
-                                })
-                            });
+                                },
+                            );
                             this.pending_manage_command =
                                 Some((command_id, ManageCommand::Reorder));
                         }
@@ -1940,11 +1941,11 @@ impl CueListsView {
                                         return;
                                     }
                                     if this.snapshot.cue_lists.iter().any(|list| list.id == id) {
-                                        let command_id = this.dispatch(move |commands| {
-                                            Box::pin(async move {
+                                        let command_id = this.dispatcher.dispatch_persisted_edit(
+                                            move |commands| async move {
                                                 commands.delete_cue_list(id).await.map(|_| ())
-                                            })
-                                        });
+                                            },
+                                        );
                                         this.pending_manage_command =
                                             Some((command_id, ManageCommand::Delete(id)));
                                         cx.notify();
@@ -1955,9 +1956,6 @@ impl CueListsView {
             )
     }
 }
-
-type CommandFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 impl Render for CueListsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2013,11 +2011,8 @@ fn manager_controls_inert(
 }
 
 fn active_cue_list(snapshot: &AppViewState) -> Option<&CueList> {
-    let active = snapshot.active_cue_list_id.as_deref()?;
-    snapshot
-        .cue_lists
-        .iter()
-        .find(|list| list.id.to_string() == active)
+    let active = snapshot.active_cue_list_id?;
+    snapshot.cue_lists.iter().find(|list| list.id == active)
 }
 
 fn selected_scene_config(snapshot: &AppViewState) -> Option<&SceneConfig> {
@@ -2033,17 +2028,6 @@ fn scene_by_id(snapshot: &AppViewState, scene_id: Uuid) -> Option<&SceneConfig> 
         .scene_configs
         .iter()
         .find(|scene| scene.internal_scene_id == scene_id)
-}
-
-#[cfg(test)]
-fn valid_cued_entry(snapshot: &AppViewState) -> Option<&CueEntry> {
-    let cued = snapshot.cued_cue_entry_id.as_deref()?;
-    let entry = active_cue_list(snapshot)?
-        .entries
-        .iter()
-        .find(|entry| entry.id.to_string() == cued)?;
-    scene_by_id(snapshot, entry.scene_internal_id)?;
-    Some(entry)
 }
 
 trait StableId {
@@ -2077,10 +2061,6 @@ impl CueArrowState {
             Self::Pending => theme::STATUS_WARNING,
         }
     }
-}
-
-fn projected_entry_id(id: Option<&str>) -> Option<Uuid> {
-    id.and_then(|id| Uuid::parse_str(id).ok())
 }
 
 /// Presentation-pending GO submissions turn the projected Next row and its successors into pending
@@ -2165,6 +2145,7 @@ fn reordered_ids<T: StableId>(items: &[T], from: Uuid, to: Uuid) -> Option<Vec<U
 
 #[cfg(test)]
 mod tests {
+    use super::super::shell::resolve_next_scene;
     use super::*;
 
     #[test]
@@ -2294,11 +2275,11 @@ mod tests {
                 name: "Main".into(),
                 entries: vec![cue.clone()],
             }],
-            active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(cue.id.to_string()),
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(cue.id),
             ..Default::default()
         };
-        assert!(valid_cued_entry(&snapshot).is_none());
+        assert!(resolve_next_scene(&snapshot, 0).is_none());
         snapshot.scene_configs.push(SceneConfig {
             internal_scene_id: cue.scene_internal_id,
             scene_index: Some(0),
@@ -2309,11 +2290,11 @@ mod tests {
             scope_toggles: Default::default(),
         });
         assert_eq!(
-            valid_cued_entry(&snapshot).map(|entry| entry.id),
-            Some(cue.id)
+            resolve_next_scene(&snapshot, 0).map(|scene| scene.internal_scene_id),
+            Some(cue.scene_internal_id)
         );
-        snapshot.active_cue_list_id = Some(id(99).to_string());
-        assert!(valid_cued_entry(&snapshot).is_none());
+        snapshot.active_cue_list_id = Some(id(99));
+        assert!(resolve_next_scene(&snapshot, 0).is_none());
     }
 
     #[test]

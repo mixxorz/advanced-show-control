@@ -282,8 +282,9 @@ async fn actor_resets_scene_observation_sequence_after_reconnecting() {
     let (release_second_peer_tx, release_second_peer_rx) = std::sync::mpsc::channel();
 
     let server = tokio::task::spawn_blocking(move || {
-        for (connection_index, (index, name)) in
-            [(3, "Bridge"), (4, "Chorus")].into_iter().enumerate()
+        for ((index, name), release_peer) in [(3, "Bridge"), (4, "Chorus")]
+            .into_iter()
+            .zip([release_first_peer_rx, release_second_peer_rx])
         {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -303,15 +304,9 @@ async fn actor_resets_scene_observation_sequence_after_reconnecting() {
                 ))
                 .unwrap();
 
-            match connection_index {
-                0 => release_first_peer_rx
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap(),
-                1 => release_second_peer_rx
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap(),
-                _ => unreachable!(),
-            }
+            release_peer
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
         }
     });
 
@@ -1274,7 +1269,6 @@ async fn actor_flush_waits_for_successful_gain_and_mute_writes() {
 
 #[tokio::test(start_paused = true)]
 async fn silent_server_disconnects_after_ping_timeout() {
-    use std::io::Write;
     use std::sync::mpsc as std_mpsc;
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1305,22 +1299,7 @@ async fn silent_server_disconnects_after_ping_timeout() {
     tokio::time::advance(std::time::Duration::from_millis(100)).await;
     tokio::task::yield_now().await;
 
-    // Wait for Connected event (no timeout needed — TCP I/O drives this)
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Ok(event) = events.recv().await {
-            if matches!(
-                event,
-                AppEvent::Lv1 {
-                    event: Lv1Event::Connected,
-                    ..
-                }
-            ) {
-                return;
-            }
-        }
-    })
-    .await
-    .expect("actor did not connect");
+    wait_for_connected(&mut events).await;
 
     // Advance time past PING_TIMEOUT (10 seconds) — this fires the sleep_until branch
     // in the connected loop select!, causing PingTimeout disconnect

@@ -444,15 +444,12 @@ pub(super) fn resolve_next_entry_id(
     snapshot: &AppViewState,
     pending_go_count: usize,
 ) -> Option<uuid::Uuid> {
-    let active_list_id = snapshot.active_cue_list_id.as_deref()?;
-    let projected_next_entry_id = snapshot
-        .cued_cue_entry_id
-        .as_deref()
-        .and_then(|id| uuid::Uuid::parse_str(id).ok());
+    let active_list_id = snapshot.active_cue_list_id?;
+    let projected_next_entry_id = snapshot.cued_cue_entry_id;
     let list = snapshot
         .cue_lists
         .iter()
-        .find(|list| list.id.to_string() == active_list_id)?;
+        .find(|list| list.id == active_list_id)?;
     displayed_next_cue_entry_id(&list.entries, projected_next_entry_id, pending_go_count)
 }
 
@@ -460,12 +457,12 @@ pub(super) fn resolve_next_scene(
     snapshot: &AppViewState,
     pending_go_count: usize,
 ) -> Option<&crate::scenes::SceneConfig> {
-    let active_list_id = snapshot.active_cue_list_id.as_deref()?;
+    let active_list_id = snapshot.active_cue_list_id?;
     let next_entry_id = resolve_next_entry_id(snapshot, pending_go_count)?;
     let list = snapshot
         .cue_lists
         .iter()
-        .find(|list| list.id.to_string() == active_list_id)?;
+        .find(|list| list.id == active_list_id)?;
     let entry = list
         .entries
         .iter()
@@ -603,8 +600,8 @@ mod tests {
                     },
                 ],
             }],
-            active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(first_entry_id.to_string()),
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(first_entry_id),
             scene_configs: vec![
                 scene(first_scene_id, "First"),
                 scene(second_scene_id, "Second"),
@@ -629,8 +626,8 @@ mod tests {
         let entry_id = Uuid::new_v4();
         let scene_id = Uuid::new_v4();
         let mut view = AppViewState {
-            active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(entry_id.to_string()),
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(entry_id),
             cue_lists: vec![CueList {
                 id: list_id,
                 name: "Main".to_string(),
@@ -656,6 +653,17 @@ mod tests {
             resolve_next_scene(&view, 0).map(|scene| scene.internal_scene_id),
             Some(scene_id)
         );
+
+        for (active_list_id, cued_entry_id) in [
+            (None, Some(entry_id)),
+            (Some(Uuid::new_v4()), Some(entry_id)),
+            (Some(list_id), None),
+            (Some(list_id), Some(Uuid::new_v4())),
+        ] {
+            view.active_cue_list_id = active_list_id;
+            view.cued_cue_entry_id = cued_entry_id;
+            assert!(resolve_next_scene(&view, 0).is_none());
+        }
     }
 
     #[test]

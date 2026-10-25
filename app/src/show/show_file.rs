@@ -82,7 +82,15 @@ pub fn export_show_file(
         scene_configs: snapshot
             .scene_configs
             .into_iter()
-            .map(show_scene_to_file_scene)
+            .map(|config| ShowFileSceneConfig {
+                internal_scene_id: Some(config.internal_scene_id),
+                scene_index: config.scene_index,
+                scene_name: config.scene_name,
+                duration_ms: config.duration_ms,
+                channel_configs: config.channel_configs,
+                scoped_channels: config.scoped_channels,
+                scope_toggles: config.scope_toggles,
+            })
             .collect(),
     }
 }
@@ -121,7 +129,15 @@ pub fn import_show_file(
     let scene_configs = file
         .scene_configs
         .iter()
-        .map(file_scene_to_show_scene)
+        .map(|config| SceneConfig {
+            internal_scene_id: config.internal_scene_id.unwrap_or_else(uuid::Uuid::new_v4),
+            scene_index: config.scene_index,
+            scene_name: config.scene_name.clone(),
+            duration_ms: config.duration_ms,
+            channel_configs: config.channel_configs.clone(),
+            scoped_channels: config.scoped_channels.clone(),
+            scope_toggles: config.scope_toggles.clone(),
+        })
         .collect::<Vec<_>>();
     let selected_scene_internal_id = scene_configs
         .first()
@@ -142,30 +158,6 @@ pub fn import_show_file(
             cued_cue_entry_id: file.cued_cue_entry_id,
         },
     })
-}
-
-fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
-    ShowFileSceneConfig {
-        internal_scene_id: Some(config.internal_scene_id),
-        scene_index: config.scene_index,
-        scene_name: config.scene_name,
-        duration_ms: config.duration_ms,
-        channel_configs: config.channel_configs,
-        scoped_channels: config.scoped_channels,
-        scope_toggles: config.scope_toggles,
-    }
-}
-
-fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
-    SceneConfig {
-        internal_scene_id: config.internal_scene_id.unwrap_or_else(uuid::Uuid::new_v4),
-        scene_index: config.scene_index,
-        scene_name: config.scene_name.clone(),
-        duration_ms: config.duration_ms,
-        channel_configs: config.channel_configs.clone(),
-        scoped_channels: config.scoped_channels.clone(),
-        scope_toggles: config.scope_toggles.clone(),
-    }
 }
 
 #[cfg(test)]

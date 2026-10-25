@@ -340,7 +340,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             continue;
                         }
                     }
-                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) if scene_library_status == SceneLibraryStatus::Ready && accepts_scene_observation_generation(event_generation, active_generation) => {
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) if scene_library_status == SceneLibraryStatus::Ready && event_generation == active_generation => {
                         recall_coordinator.observe_scene(event_generation, sequence, scene, tokio::time::Instant::now());
                         #[cfg(test)]
                         if let Some(observer) = pending_scene_observer.take() {
@@ -505,7 +505,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         command,
                         ScenesCommand::ReplaceSessionDocument { .. }
                             | ScenesCommand::GuardedReplaceSessionDocument { .. }
-                    ) || (pending_snapshot.is_none() && pending_recall.is_none())
+                    )
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -625,12 +625,10 @@ async fn run_scenes_actor(task: ScenesTask) {
                 if dispatch_scenes_command(
                     command,
                     &mut recall_state,
-                    &mut recall_coordinator,
                     &peers,
                     &event_bus,
                     active_generation,
                     &runtime_generation,
-                    &lockout,
                     &mut cached_scene_list,
                     &mut scene_library_status,
                 )
@@ -801,10 +799,6 @@ async fn run_scenes_actor(task: ScenesTask) {
     recall_coordinator.clear_late_observations();
 }
 
-fn accepts_scene_observation_generation(event_generation: u64, active_generation: u64) -> bool {
-    event_generation == active_generation
-}
-
 #[allow(clippy::too_many_arguments)]
 /**
  * @cc [owner:mixxorz,label:safety] generation-transition-cancels-runtime-intent
@@ -892,9 +886,7 @@ async fn finish_pending_snapshot(
                 && *scene_library_status == SceneLibraryStatus::Ready
                 && snapshot.connection == ConnectionStatus::Connected =>
         {
-            let changed = state
-                .store_scene_config(operation.internal_scene_id, &snapshot.channels)
-                .map_err(|error| error.to_string());
+            let changed = state.store_scene_config(operation.internal_scene_id, &snapshot.channels);
             changed.map(|changed| {
                 if changed {
                     publish_scene_state_changed(event_bus, operation.generation, state, true);
@@ -999,12 +991,10 @@ fn cancel_queued_cue_recalls(
 async fn dispatch_scenes_command(
     command: ScenesCommand,
     recall_state: &mut ScenesState,
-    _recall_coordinator: &mut RecallCoordinator,
     peers: &ScenesPeers,
     event_bus: &AppEventBus,
     generation: u64,
     runtime_generation: &RuntimeGeneration,
-    _lockout: &ShowLockoutReader,
     cached_scene_list: &mut Option<Vec<crate::lv1::SceneListEntry>>,
     scene_library_status: &mut SceneLibraryStatus,
 ) -> ScenesCommandDispatch {
@@ -1053,7 +1043,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.set_scene_duration_ms(internal_scene_id, duration_ms),
                 event_bus,
                 generation,
@@ -1069,7 +1058,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled),
                 event_bus,
                 generation,
@@ -1085,7 +1073,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled),
                 event_bus,
                 generation,
@@ -1107,7 +1094,6 @@ async fn dispatch_scenes_command(
                     }
                     mutate_scene_state(
                         recall_state,
-                        true,
                         |state| {
                             state.link_scene_config_by_index(
                                 source_internal_scene_id,
@@ -1131,7 +1117,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.delete_scene_config(internal_scene_id),
                 event_bus,
                 generation,
@@ -1149,7 +1134,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped),
                 event_bus,
                 generation,
@@ -1165,7 +1149,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.set_all_channels_scoped(internal_scene_id, scoped),
                 event_bus,
                 generation,
@@ -1212,7 +1195,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                true,
                 |state| state.paste_scene_settings(destination_internal_scene_id),
                 event_bus,
                 generation,
@@ -1264,10 +1246,6 @@ struct PendingRecallOperation {
 impl PendingRecallOperation {
     fn snapshot_for_admission(lv1: Lv1Connection, admission: PendingRecallAdmission) -> Self {
         Self::explicit_snapshot(lv1, PendingRecallContext::Admission(admission))
-    }
-
-    fn snapshot_for_dispatch(lv1: Lv1Connection, dispatch: PendingRecallDispatch) -> Self {
-        Self::explicit_snapshot(lv1, PendingRecallContext::DispatchSnapshot(dispatch))
     }
 
     fn explicit_snapshot(lv1: Lv1Connection, context: PendingRecallContext) -> Self {
@@ -1451,9 +1429,9 @@ fn start_next_recall_dispatch(
         coordinator.cancel_pending_dispatch(dispatch, "LV1 state is unavailable");
         return None;
     };
-    Some(PendingRecallOperation::snapshot_for_dispatch(
+    Some(PendingRecallOperation::explicit_snapshot(
         handles.lv1,
-        dispatch,
+        PendingRecallContext::DispatchSnapshot(dispatch),
     ))
 }
 
@@ -1678,13 +1656,16 @@ fn apply_scene_list(
 ) {
     let before = recall_state.scene_configs().to_vec();
     let changed = recall_state.observe_and_align_scene_list(
-        true,
         generation,
         scene_list.clone(),
         tokio::time::Instant::now(),
     );
     if changed {
-        log_scene_alignment(&before, recall_state, &scene_list);
+        tracing::debug!(
+            event = "session_scene_alignment",
+            "{}",
+            scene_alignment_diagnostic(&before, recall_state.scene_configs(), &scene_list)
+        );
     }
     publish_scene_state_changed(event_bus, generation, recall_state, changed);
 }
@@ -1710,21 +1691,8 @@ fn publish_scene_state_changed(
     );
 }
 
-fn log_scene_alignment(
-    before: &[crate::scenes::SceneConfig],
-    state: &ScenesState,
-    scene_list: &[crate::lv1::SceneListEntry],
-) {
-    tracing::debug!(
-        event = "session_scene_alignment",
-        "{}",
-        scene_alignment_diagnostic(before, state.scene_configs(), scene_list)
-    );
-}
-
 fn mutate_scene_state<F>(
     state: &mut ScenesState,
-    persisted_scene_edit: bool,
     op: F,
     event_bus: &AppEventBus,
     generation: u64,
@@ -1734,7 +1702,7 @@ where
 {
     let changed = op(state)?;
     if changed {
-        publish_scene_state_changed(event_bus, generation, state, persisted_scene_edit);
+        publish_scene_state_changed(event_bus, generation, state, true);
     }
     Ok(ScenesCommandResult { changed })
 }

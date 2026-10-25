@@ -244,8 +244,8 @@ impl ProjectionCache {
             discovered_lv1_systems: state.show.discovered_lv1_systems.clone(),
             connected_lv1_identity: state.show.connected_lv1_identity.clone(),
             current_scene,
-            scenes: scenes.clone(),
             scene_count: scenes.len(),
+            scenes,
             channel_count: channels.len(),
             channels,
             fade_state: self.fade_state.clone(),
@@ -254,20 +254,9 @@ impl ProjectionCache {
             scene_settings_clipboard_available: state.scenes.scene_settings_clipboard_available,
             cue_lists: state.cue_lists.document.cue_lists.clone(),
             session_revision: state.session_revision,
-            active_cue_list_id: state
-                .cue_lists
-                .document
-                .active_cue_list_id
-                .map(|id| id.to_string()),
-            current_cue_entry_id: state
-                .cue_lists
-                .current_cue_entry_id
-                .map(|id| id.to_string()),
-            cued_cue_entry_id: state
-                .cue_lists
-                .document
-                .cued_cue_entry_id
-                .map(|id| id.to_string()),
+            active_cue_list_id: state.cue_lists.document.active_cue_list_id,
+            current_cue_entry_id: state.cue_lists.current_cue_entry_id,
+            cued_cue_entry_id: state.cue_lists.document.cued_cue_entry_id,
             last_cue_recall_status: state.cue_lists.last_recall_status.clone(),
             selected_scene_internal_id: state.scenes.selected_scene_internal_id.clone(),
             show_file_name: state.show.show_file_name.clone(),
@@ -628,6 +617,7 @@ mod tests {
         let mut state = AppStateSnapshot::default();
         let cue_list_id = uuid::Uuid::from_u128(1);
         let current_entry_id = uuid::Uuid::from_u128(2);
+        let cued_entry_id = uuid::Uuid::from_u128(3);
         state.cue_lists = CueListsProjectionState {
             document: crate::cue_lists::CueListDocument {
                 cue_lists: vec![crate::cue_lists::CueList {
@@ -636,7 +626,7 @@ mod tests {
                     entries: vec![],
                 }],
                 active_cue_list_id: Some(cue_list_id),
-                cued_cue_entry_id: None,
+                cued_cue_entry_id: Some(cued_entry_id),
             },
             current_cue_entry_id: Some(current_entry_id),
             last_recall_status: None,
@@ -645,14 +635,18 @@ mod tests {
         let snapshot = cache.build_snapshot(&state);
 
         assert_eq!(snapshot.cue_lists[0].name, "Main");
+        assert_eq!(snapshot.current_cue_entry_id, Some(current_entry_id));
+        assert_eq!(snapshot.active_cue_list_id, Some(cue_list_id));
+        assert_eq!(snapshot.cued_cue_entry_id, Some(cued_entry_id));
+
+        // Typed identities retain the existing string representation at the serialized boundary.
+        let serialized = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(serialized["activeCueListId"], cue_list_id.to_string());
         assert_eq!(
-            snapshot.current_cue_entry_id.as_deref(),
-            Some(current_entry_id.to_string().as_str())
+            serialized["currentCueEntryId"],
+            current_entry_id.to_string()
         );
-        assert_eq!(
-            snapshot.active_cue_list_id.as_deref(),
-            Some(cue_list_id.to_string().as_str())
-        );
+        assert_eq!(serialized["cuedCueEntryId"], cued_entry_id.to_string());
     }
 
     #[test]

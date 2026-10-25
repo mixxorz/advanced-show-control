@@ -3,17 +3,12 @@ use std::collections::HashMap;
 use crate::lv1::SceneListEntry;
 use crate::scenes::{SceneConfig, SceneScopeToggles};
 use uuid::Uuid;
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SceneEntry {
-    index: i32,
-    name: String,
-}
 
-fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneEntry> {
+fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneListEntry> {
     configs
         .iter()
         .filter_map(|scene| {
-            scene.scene_index.map(|index| SceneEntry {
+            scene.scene_index.map(|index| SceneListEntry {
                 index,
                 name: scene.scene_name.clone(),
             })
@@ -21,17 +16,7 @@ fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneEntry> {
         .collect()
 }
 
-fn entries_from_scene_list(scenes: &[SceneListEntry]) -> Vec<SceneEntry> {
-    scenes
-        .iter()
-        .map(|scene| SceneEntry {
-            index: scene.index,
-            name: scene.name.clone(),
-        })
-        .collect()
-}
-
-fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
+fn default_scene_config(entry: &SceneListEntry) -> SceneConfig {
     SceneConfig {
         internal_scene_id: Uuid::new_v4(),
         scene_index: Some(entry.index),
@@ -43,12 +28,12 @@ fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
     }
 }
 
-fn update_scene_locator(config: &mut SceneConfig, entry: &SceneEntry) {
+fn update_scene_locator(config: &mut SceneConfig, entry: &SceneListEntry) {
     config.scene_index = Some(entry.index);
     config.scene_name = entry.name.clone();
 }
 
-fn describe_entries(entries: &[SceneEntry]) -> String {
+fn describe_entries(entries: &[SceneListEntry]) -> String {
     entries
         .iter()
         .map(|entry| format!("{}:{:?}", entry.index, entry.name))
@@ -56,12 +41,8 @@ fn describe_entries(entries: &[SceneEntry]) -> String {
         .join(" | ")
 }
 
-fn name_counts(entries: &[SceneEntry]) -> Vec<String> {
-    let mut counts = HashMap::<String, usize>::new();
-    for entry in entries {
-        *counts.entry(entry.name.clone()).or_default() += 1;
-    }
-    let mut duplicates = counts
+fn name_counts(entries: &[SceneListEntry]) -> Vec<String> {
+    let mut duplicates = scene_entry_name_counts(entries)
         .into_iter()
         .filter_map(|(name, count)| (count > 1).then(|| format!("{name}x{count}")))
         .collect::<Vec<_>>();
@@ -69,7 +50,7 @@ fn name_counts(entries: &[SceneEntry]) -> Vec<String> {
     duplicates
 }
 
-fn scene_entry_name_counts(entries: &[SceneEntry]) -> HashMap<String, usize> {
+fn scene_entry_name_counts(entries: &[SceneListEntry]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
     for entry in entries {
         *counts.entry(entry.name.clone()).or_default() += 1;
@@ -77,19 +58,20 @@ fn scene_entry_name_counts(entries: &[SceneEntry]) -> HashMap<String, usize> {
     counts
 }
 
-fn align_by_current_lv1_order(
+/**
+ * @cc [owner:mixxorz,label:persistence] conservative-scene-alignment
+ * Alignment MUST preserve a config's durable UUID and fade metadata only for an exact index/name
+ * match, a name unique in both old and new lists, or the sole same-index rename in equal-length
+ * lists. Ambiguous or missing matches MUST create default linked configs and retain unmatched old
+ * configs as unlinked rather than guessing identity.
+ */
+pub(crate) fn align_scene_configs(
     configs: Vec<SceneConfig>,
-    entries: &[SceneEntry],
+    entries: &[SceneListEntry],
 ) -> Vec<SceneConfig> {
-    let mut remaining = configs
-        .iter()
-        .filter(|scene| scene.scene_index.is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut unlinked = configs
+    let (mut remaining, unlinked): (Vec<_>, Vec<_>) = configs
         .into_iter()
-        .filter(|scene| scene.scene_index.is_none())
-        .collect::<Vec<_>>();
+        .partition(|scene| scene.scene_index.is_some());
     let old_name_counts = scene_config_name_counts(&remaining);
     let new_name_counts = scene_entry_name_counts(entries);
     let renamed_index = single_same_index_rename(&remaining, entries);
@@ -98,9 +80,7 @@ fn align_by_current_lv1_order(
         if let Some(position) = remaining.iter().position(|scene| {
             scene.scene_index == Some(entry.index) && scene.scene_name == entry.name
         }) {
-            let mut scene = remaining.remove(position);
-            update_scene_locator(&mut scene, entry);
-            next.push(scene);
+            next.push(remaining.remove(position));
         } else if let Some(position) =
             unique_name_match_position(&remaining, entry, &old_name_counts, &new_name_counts)
         {
@@ -126,16 +106,13 @@ fn align_by_current_lv1_order(
         scene.scene_index = None;
         next.push(scene);
     }
-    for scene in unlinked.iter_mut() {
-        scene.scene_index = None;
-    }
     next.extend(unlinked);
     next
 }
 
 fn unique_name_match_position(
     remaining: &[SceneConfig],
-    entry: &SceneEntry,
+    entry: &SceneListEntry,
     old_name_counts: &HashMap<String, usize>,
     new_name_counts: &HashMap<String, usize>,
 ) -> Option<usize> {
@@ -149,7 +126,7 @@ fn unique_name_match_position(
     }
 }
 
-fn single_same_index_rename(configs: &[SceneConfig], entries: &[SceneEntry]) -> Option<i32> {
+fn single_same_index_rename(configs: &[SceneConfig], entries: &[SceneListEntry]) -> Option<i32> {
     if configs.len() != entries.len() {
         return None;
     }
@@ -176,20 +153,6 @@ fn scene_config_name_counts(configs: &[SceneConfig]) -> HashMap<String, usize> {
     counts
 }
 
-/**
- * @cc [owner:mixxorz,label:persistence] conservative-scene-alignment
- * Alignment MUST preserve a config's durable UUID and fade metadata only for an exact index/name
- * match, a name unique in both old and new lists, or the sole same-index rename in equal-length
- * lists. Ambiguous or missing matches MUST create default linked configs and retain unmatched old
- * configs as unlinked rather than guessing identity.
- */
-pub(crate) fn align_scene_configs(
-    configs: Vec<SceneConfig>,
-    lv1_scenes: &[SceneListEntry],
-) -> Vec<SceneConfig> {
-    align_by_current_lv1_order(configs, &entries_from_scene_list(lv1_scenes))
-}
-
 pub(crate) fn scene_alignment_diagnostic(
     old: &[SceneConfig],
     new: &[SceneConfig],
@@ -197,13 +160,12 @@ pub(crate) fn scene_alignment_diagnostic(
 ) -> String {
     let old_entries = entries_from_configs(old);
     let new_entries = entries_from_configs(new);
-    let lv1_entries = entries_from_scene_list(lv1_scenes);
     format!(
         "scene alignment preview: old=[{}] new=[{}] lv1=[{}] duplicate_names=[{}] strategy=exact-unique-name-single-rename",
         describe_entries(&old_entries),
         describe_entries(&new_entries),
-        describe_entries(&lv1_entries),
-        name_counts(&lv1_entries).join(","),
+        describe_entries(lv1_scenes),
+        name_counts(lv1_scenes).join(","),
     )
 }
 
@@ -380,6 +342,19 @@ mod tests {
 
         assert_eq!(aligned[0].scene_index, Some(1));
         assert_eq!(aligned[1].scene_index, None);
+    }
+
+    #[test]
+    fn empty_library_retains_linked_then_unlinked_configs_without_resetting_metadata() {
+        let draft = scene(1, None, "Draft", 1_500);
+        let linked = scene(2, Some(4), "Stored", 2_500);
+        let other_draft = scene(3, None, "Other draft", 3_500);
+        let mut expected_unlinked = linked.clone();
+        expected_unlinked.scene_index = None;
+
+        let aligned = align_scene_configs(vec![draft.clone(), linked, other_draft.clone()], &[]);
+
+        assert_eq!(aligned, vec![expected_unlinked, draft, other_draft]);
     }
 
     #[test]

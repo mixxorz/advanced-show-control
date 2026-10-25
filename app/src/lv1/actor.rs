@@ -218,7 +218,7 @@ fn drain_disconnected_command(
         }
         Lv1Command::Flush { reply } => {
             if let Some(reply) = reply {
-                let _ = reply.send(flush_reply.clone());
+                let _ = reply.send(flush_reply);
             }
         }
     }

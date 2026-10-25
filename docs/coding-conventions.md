@@ -5,6 +5,10 @@ This document is the source of truth for day-to-day implementation conventions i
 ## General Principles
 
 - Prefer the smallest correct change.
+- Before adding complexity for a speculative concurrency or security edge case, explain the concrete failure, its likelihood, and the approximate extra code to the owner and obtain approval.
+- Validate external input at the owning file, network, CLI, or command entry point, then carry typed values internally rather than revalidating unchanged data. Rechecking mutable runtime state after waits is a separate safety requirement.
+- Inline trivial single-use helpers. Keep helpers that are reused or hide a genuinely complex operation; do not split a straight-line function merely for structure.
+- Propagate errors directly unless handling them adds necessary cleanup, recovery, or useful boundary context. Do not catch, rewrap, or stringify an error only to return it unchanged.
 - Keep code paths explicit and easy to reason about. This app controls live mixer faders.
 - Follow existing module patterns unless the task is specifically to improve structure.
 - Do not add backward-compatibility code unless persisted data, shipped behavior, external consumers, or an explicit requirement need it.

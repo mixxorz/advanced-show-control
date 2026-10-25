@@ -200,7 +200,7 @@ mod tests {
             // Endpoint lookup has no contended locks; the first poll reaches the full mailbox.
             poll_pending(request.as_mut()).await;
 
-            debug.lifecycle.begin_connecting().await.unwrap();
+            debug.lifecycle.begin_connecting().await;
             assert!(matches!(
                 receiver.recv().await,
                 Some(Lv1Command::Flush { reply: None })
@@ -232,7 +232,7 @@ mod tests {
             poll_pending(request.as_mut()).await;
             let command = receiver.recv().await.unwrap();
 
-            debug.lifecycle.begin_connecting().await.unwrap();
+            debug.lifecycle.begin_connecting().await;
             operation.acknowledge(command);
             assert_eq!(
                 request.await,
