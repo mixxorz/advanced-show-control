@@ -11,7 +11,7 @@ enum Completion {
 }
 struct Pending {
     task: tokio::task::JoinHandle<Completion>,
-    epoch: u64,
+    nightly: bool,
     reply: Option<Reply>,
 }
 pub struct UpdatesTask {
@@ -40,9 +40,10 @@ impl UpdatesTask {
 
     /**
      * @cc [owner:mixxorz,label:safety;concurrency] update-channel-invalidation
-     * Retained channel-policy revision changes MUST clear available and downloaded intent and
-     * reject pending replies, including coalesced toggles back to the original channel.
-     * Stale blocking completions MUST NOT publish state, log success, or supply installation plans.
+     * A different current update channel MUST clear available and downloaded intent and reject
+     * pending replies. Blocking completions from a different current channel MUST NOT publish
+     * state, log success, or supply installation plans. Returning to the operation's channel
+     * MAY accept its completion; intervening toggles do not permanently invalidate it.
      * Settings MUST remain responsive during blocking I/O.
      */
     /**
@@ -52,17 +53,13 @@ impl UpdatesTask {
      */
     async fn run(mut self) {
         let mut retained = self.bus.state();
-        let (settings, initial_revision) = {
-            let snapshot = retained.borrow_and_update();
-            (snapshot.settings.clone(), snapshot.update_channel_revision)
-        };
+        let settings = retained.borrow_and_update().settings.clone();
         let mut nightly = settings.include_nightly_updates;
         let mut automatic = settings.automatically_check_for_updates;
         let mut state = UpdateState::default();
         let mut candidate: Option<Arc<dyn Candidate>> = None;
         let mut staged = None;
-        let mut epoch = initial_revision;
-        let mut pending = Some(self.start_check(nightly, automatic, epoch, None));
+        let mut pending = Some(self.start_check(nightly, automatic, None));
         let mut queued_auto = false;
         let mut timer = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(6 * 3600),
@@ -77,17 +74,13 @@ impl UpdatesTask {
             tokio::select! {
                 changed = retained.changed() => {
                     if changed.is_err() { break; }
-                    let (settings, next_revision) = {
-                        let snapshot = retained.borrow_and_update();
-                        (snapshot.settings.clone(), snapshot.update_channel_revision)
-                    };
-                    let channel_changed = epoch != next_revision;
+                    let settings = retained.borrow_and_update().settings.clone();
+                    let channel_changed = nightly != settings.include_nightly_updates;
                     let newly_enabled = !automatic && settings.automatically_check_for_updates;
                     automatic = settings.automatically_check_for_updates;
                     if !automatic { queued_auto = false; }
                     if channel_changed {
                         nightly = settings.include_nightly_updates;
-                        epoch = next_revision;
                         candidate = None;
                         staged = None;
                         if let Some(operation) = &mut pending
@@ -119,7 +112,7 @@ impl UpdatesTask {
                             state.error = None;
                             state.status = UpdateStatus::Checking;
                             self.publish(&state);
-                            pending = Some(self.start_check(nightly, true, epoch, Some(reply)));
+                            pending = Some(self.start_check(nightly, true, Some(reply)));
                         }
                         UpdatesCommand::Download { reply } => {
                             if pending.is_some() {
@@ -136,13 +129,13 @@ impl UpdatesTask {
                             self.publish(&state);
                             pending = Some(Pending {
                                 task: tokio::task::spawn_blocking(move || Completion::Download(update.download())),
-                                epoch,
+                                nightly,
                                 reply: Some(reply),
                             });
                         }
                         UpdatesCommand::PrepareInstall { reply } => {
                             // Read retained policy as well as watch notifications before handing out intent.
-                            if retained.borrow().update_channel_revision != epoch {
+                            if retained.borrow().settings.include_nightly_updates != nightly {
                                 let _ = reply.send(Err("The update channel changed; please try again.".into()));
                             } else {
                                 let result = staged.as_ref().cloned().ok_or_else(|| "No downloaded update is ready to install.".into());
@@ -154,19 +147,20 @@ impl UpdatesTask {
                 result = async { (&mut pending.as_mut().expect("pending operation").task).await }, if pending.is_some() => {
                     let operation = pending.take().unwrap();
                     // Retained settings are authoritative even if watch delivery loses the select race.
-                    if operation.epoch != epoch || retained.borrow().update_channel_revision != operation.epoch {
+                    if retained.borrow().settings.include_nightly_updates != operation.nightly {
                         if let Some(reply) = operation.reply { let _ = reply.send(Err("The update channel changed; please try again.".into())); }
                         if queued_auto && automatic
                             && retained.borrow().settings.automatically_check_for_updates
-                            && retained.borrow().update_channel_revision == epoch
+                            && retained.borrow().settings.include_nightly_updates == nightly
                         {
                             queued_auto = false;
                             state.status = UpdateStatus::Checking;
                             self.publish(&state);
-                            pending = Some(self.start_check(nightly, true, epoch, None));
+                            pending = Some(self.start_check(nightly, true, None));
                         }
                         continue;
                     }
+                    nightly = operation.nightly;
                     let downloaded = matches!(&result, Ok(Completion::Download(Ok(_))));
                     let outcome = match result {
                         Ok(Completion::Check(Ok(checked), network)) => {
@@ -208,7 +202,7 @@ impl UpdatesTask {
                             Err(reason)
                         }
                         Ok(Completion::Download(Ok(plan))) => {
-                            staged = Some(plan.bind(&self.bus, epoch));
+                            staged = Some(plan.bind(&self.bus, operation.nightly));
                             state.status = UpdateStatus::Ready;
                             Ok(())
                         }
@@ -251,30 +245,24 @@ impl UpdatesTask {
                 && pending.is_none()
                 && automatic
                 && retained.borrow().settings.automatically_check_for_updates
-                && retained.borrow().update_channel_revision == epoch
+                && retained.borrow().settings.include_nightly_updates == nightly
             {
                 queued_auto = false;
                 // Keep a verified download while refreshing the same channel's release feed.
                 state.error = None;
                 state.status = UpdateStatus::Checking;
                 self.publish(&state);
-                pending = Some(self.start_check(nightly, true, epoch, None));
+                pending = Some(self.start_check(nightly, true, None));
             }
         }
     }
-    fn start_check(
-        &self,
-        nightly: bool,
-        network: bool,
-        epoch: u64,
-        reply: Option<Reply>,
-    ) -> Pending {
+    fn start_check(&self, nightly: bool, network: bool, reply: Option<Reply>) -> Pending {
         let backend = self.backend.clone();
         Pending {
             task: tokio::task::spawn_blocking(move || {
                 Completion::Check(backend.check(nightly, network), network)
             }),
-            epoch,
+            nightly,
             reply,
         }
     }

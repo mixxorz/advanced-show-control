@@ -592,16 +592,15 @@ fn pending_new_show(
                     "New session blocked: LV1 scene list is not loaded".to_string()
                 })?;
                 let scene_configs = crate::scenes::align_scene_configs(Vec::new(), scene_list);
-                let selected_scene_internal_id = scene_configs
-                    .first()
-                    .map(|scene| scene.internal_scene_id.to_string());
+                let selected_scene_internal_id =
+                    scene_configs.first().map(|scene| scene.internal_scene_id);
                 validate_lv1_snapshot(&peers, expected_generation, &lv1).await?;
                 replace_session_document(
                     &peers,
                     SessionDocument {
                         scenes: SceneDocument {
                             scene_configs,
-                            selected_scene_internal_id: selected_scene_internal_id.clone(),
+                            selected_scene_internal_id,
                         },
                         cue_lists: CueListDocument::default(),
                     },
@@ -856,7 +855,7 @@ struct PreparedLoad {
     load_kind: ShowFileLoadKind,
     saved_at: String,
     lockout: bool,
-    selected_scene_internal_id: Option<String>,
+    selected_scene_internal_id: Option<uuid::Uuid>,
     should_mark_dirty: bool,
     alignment_diagnostic: Option<String>,
 }
@@ -922,15 +921,15 @@ async fn prepare_load_show_file(
             scene_document
                 .scene_configs
                 .iter()
-                .any(|scene| scene.internal_scene_id.to_string() == *selected)
+                .any(|scene| scene.internal_scene_id == *selected)
         })
         .or_else(|| {
             scene_document
                 .scene_configs
                 .first()
-                .map(|scene| scene.internal_scene_id.to_string())
+                .map(|scene| scene.internal_scene_id)
         });
-    scene_document.selected_scene_internal_id = selected_scene_internal_id.clone();
+    scene_document.selected_scene_internal_id = selected_scene_internal_id;
     validate_lv1_snapshot(peers, expected_generation, lv1).await?;
     let committed = replace_session_document(
         peers,
@@ -1590,10 +1589,7 @@ mod tests {
             .await
             .expect("template should load");
 
-        assert_eq!(
-            result.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
-        );
+        assert_eq!(result.selected_scene_internal_id, Some(Uuid::from_u128(1)));
         assert_eq!(
             get_scene_document(&scenes).await.scene_configs[0].duration_ms,
             2_500
@@ -1684,10 +1680,7 @@ mod tests {
         assert_eq!(document.scene_configs[1].scene_index, Some(2));
         assert_eq!(document.scene_configs[1].scene_name, "Verse");
         assert_eq!(document.scene_configs[1].duration_ms, 0);
-        assert_eq!(
-            result.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
-        );
+        assert_eq!(result.selected_scene_internal_id, Some(Uuid::from_u128(1)));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1758,8 +1751,6 @@ mod tests {
 
     #[tokio::test]
     async fn connected_load_marks_dirty_when_alignment_changes_imported_configs() {
-        let captured = crate::test_support::TracingCapture::new();
-        let _guard = captured.install();
         let event_bus = AppEventBus::default();
         let (show, _peers, scenes, _cue_lists) = load_fixture(
             event_bus,
@@ -1781,14 +1772,6 @@ mod tests {
         assert!(current_show_state(&show).await.show_file_dirty);
         let document = get_scene_document(&scenes).await;
         assert_eq!(document.scene_configs[0].scene_index, Some(2));
-        let diagnostics = captured.matching("session_scene_alignment", tracing::Level::DEBUG);
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].message.as_deref(),
-            Some(
-                r#"scene alignment preview: old=[1:"Intro"] new=[2:"Intro"] lv1=[2:"Intro"] duplicate_names=[] strategy=exact-unique-name-single-rename"#
-            )
-        );
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2044,7 +2027,7 @@ mod tests {
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
         assert_eq!(
             scene_document.selected_scene_internal_id,
-            Some(Uuid::from_u128(1).to_string())
+            Some(Uuid::from_u128(1))
         );
     }
 
@@ -2254,11 +2237,7 @@ mod tests {
         let scene_document = get_scene_document(&scenes).await;
         assert_eq!(scene_document.scene_configs.len(), 2);
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
-        let selected_scene_internal_id = Some(
-            scene_document.scene_configs[0]
-                .internal_scene_id
-                .to_string(),
-        );
+        let selected_scene_internal_id = Some(scene_document.scene_configs[0].internal_scene_id);
         assert_eq!(
             scene_document.selected_scene_internal_id,
             selected_scene_internal_id

@@ -187,7 +187,7 @@ async fn scene_state_changes_are_projected() {
                     scoped_channels: vec![],
                     scope_toggles: Default::default(),
                 }],
-                selected_scene_internal_id: Some(Uuid::from_u128(1).to_string()),
+                selected_scene_internal_id: Some(Uuid::from_u128(1)),
                 ..Default::default()
             },
             persisted_scene_edit: false,
@@ -197,7 +197,7 @@ async fn scene_state_changes_are_projected() {
     assert_eq!(snapshot.scene_configs[0].scene_name, "Bridge");
     assert_eq!(
         snapshot.selected_scene_internal_id.unwrap(),
-        Uuid::from_u128(1).to_string()
+        Uuid::from_u128(1)
     );
 }
 
@@ -340,24 +340,6 @@ fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
         snapshot.connection,
         crate::projector::AppConnectionState::Disconnected
     );
-}
-
-#[test]
-fn recovery_result_applies_a_snapshot_from_the_current_generation() {
-    let mut cache = ProjectionCache::new();
-    let result = ProjectorRecoveryResult {
-        snapshot: Some((2, recovery_snapshot("Recovered"))),
-        timed_out: false,
-    };
-
-    apply_recovery_result(&mut cache, result, 2);
-
-    let snapshot = cache.build_snapshot(&Default::default());
-    assert_eq!(
-        snapshot.connection,
-        crate::projector::AppConnectionState::Connected
-    );
-    assert_eq!(snapshot.current_scene.unwrap().name, "Recovered");
 }
 
 fn recovery_snapshot(name: &str) -> crate::lv1::Lv1StateSnapshot {

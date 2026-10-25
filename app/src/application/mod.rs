@@ -852,7 +852,7 @@ mod tests {
             reply
                 .unwrap()
                 .send(Ok(NewShowFileResult {
-                    selected_scene_internal_id: Some("scene-id".to_string()),
+                    selected_scene_internal_id: Some(Uuid::from_u128(1)),
                 }))
                 .unwrap();
         });
@@ -864,7 +864,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .selected_scene_internal_id,
-            Some("scene-id".to_string())
+            Some(Uuid::from_u128(1))
         );
         actor.await.unwrap();
     }

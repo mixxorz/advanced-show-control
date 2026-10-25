@@ -70,11 +70,11 @@ pub struct ConnectCommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewShowFileResult {
-    pub selected_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadShowFileResult {
-    pub selected_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<uuid::Uuid>,
     pub saved_at: String,
 }

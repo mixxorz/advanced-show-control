@@ -77,7 +77,7 @@ pub struct AppViewState {
     pub cued_cue_entry_id: Option<Uuid>,
     pub settings: AppSettings,
     pub updates: crate::updates::UpdateState,
-    pub selected_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<Uuid>,
     pub show_file_name: String,
     pub show_file_path: Option<String>,
     pub show_file_dirty: bool,

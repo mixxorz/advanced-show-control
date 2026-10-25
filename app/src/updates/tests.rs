@@ -470,7 +470,7 @@ async fn ready_plan(
 }
 
 #[tokio::test]
-async fn issued_plan_rejects_channel_change_before_arm_and_never_revives() {
+async fn issued_plan_requires_the_current_channel_before_arm_and_launch() {
     let bus = AppEventBus::default();
     let (_handle, plan, launches, _requests) = ready_plan(&bus).await;
     let queue = UpdateInstallQueue::default();
@@ -478,10 +478,12 @@ async fn issued_plan_rejects_channel_change_before_arm_and_never_revives() {
     settings(&bus, false, true);
     assert!(queue.arm(plan.clone()).is_err());
     assert!(queue.take().is_none());
-    settings(&bus, false, false);
-    assert!(queue.arm(plan.clone()).is_err());
-    assert!(plan.launch_after_exit().is_err());
+    assert!(plan.clone().launch_after_exit().is_err());
     assert_eq!(launches.load(Ordering::SeqCst), 0);
+    settings(&bus, false, false);
+    queue.arm(plan).unwrap();
+    queue.take().unwrap().launch_after_exit().unwrap();
+    assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -492,19 +494,6 @@ async fn armed_plan_revalidates_channel_before_launch() {
     queue.arm(plan).unwrap();
     settings(&bus, false, true);
     assert!(queue.take().unwrap().launch_after_exit().is_err());
-    assert_eq!(launches.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn actor_observed_channel_generation_invalidates_ticket_even_after_returning_to_old_channel()
-{
-    let bus = AppEventBus::default();
-    let (_handle, plan, launches, _requests) = ready_plan(&bus).await;
-    settings(&bus, false, true);
-    status(&bus, UpdateStatus::Idle).await;
-    settings(&bus, false, false);
-    assert!(UpdateInstallQueue::default().arm(plan.clone()).is_err());
-    assert!(plan.launch_after_exit().is_err());
     assert_eq!(launches.load(Ordering::SeqCst), 0);
 }
 
@@ -540,63 +529,17 @@ async fn periodic_same_version_check_preserves_verified_download_for_retry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn coalesced_channel_toggles_invalidate_issued_plan_before_actor_notification() {
+async fn coalesced_channel_toggles_accept_worker_for_the_current_channel() {
     let bus = AppEventBus::default();
-    let (handle, plan, launches, _requests) = ready_plan(&bus).await;
-    // Do not yield: the Updates owner cannot observe the intermediate policy.
-    settings(&bus, false, true);
-    settings(&bus, false, false);
-    let queue = UpdateInstallQueue::default();
-    assert!(queue.arm(plan.clone()).is_err());
-    assert!(queue.take().is_none());
-    assert!(plan.launch_after_exit().is_err());
-    let (reply, response) = oneshot::channel();
-    handle
-        .send(UpdatesCommand::PrepareInstall { reply })
-        .await
-        .unwrap();
-    assert!(response.await.unwrap().is_err());
-    status(&bus, UpdateStatus::Idle).await;
-    assert_eq!(launches.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn coalesced_channel_toggles_reject_old_worker_completion() {
-    let bus = AppEventBus::default();
-    let mut events = bus.subscribe();
     let (checks, mut requests) = tokio::sync::mpsc::unbounded_channel();
     let (_handle, task) = actor::build(bus.clone(), Arc::new(FakeBackend(checks)));
     task.spawn();
-    let stale = request(&mut requests).await;
+    let check = request(&mut requests).await;
     settings(&bus, true, true);
     settings(&bus, true, false);
-    stale.reply.send(Ok(checked(None))).ok().unwrap();
-    // Starting the replacement check proves the stale worker has drained.
-    let fresh = request(&mut requests).await;
-    assert!(!fresh.nightly);
-    while let Ok(event) = events.try_recv() {
-        if let AppEvent::Updates(state) = event {
-            assert_ne!(state.status, UpdateStatus::UpToDate);
-            assert_eq!(state.current_version, None);
-        }
-    }
-    fresh.reply.send(Ok(checked(None))).ok().unwrap();
+    check.reply.send(Ok(checked(None))).ok().unwrap();
     status(&bus, UpdateStatus::UpToDate).await;
-}
-
-#[test]
-fn retained_channel_revision_tracks_every_toggle_without_dirtying_session() {
-    let bus = AppEventBus::default();
-    settings(&bus, false, false);
-    assert_eq!(bus.state().borrow().update_channel_revision, 0);
-    settings(&bus, true, false);
-    assert_eq!(bus.state().borrow().update_channel_revision, 0);
-    settings(&bus, true, true);
-    assert_eq!(bus.state().borrow().update_channel_revision, 1);
-    settings(&bus, true, true);
-    assert_eq!(bus.state().borrow().update_channel_revision, 1);
-    settings(&bus, true, false);
-    assert_eq!(bus.state().borrow().update_channel_revision, 2);
+    assert!(requests.try_recv().is_err());
     assert_eq!(bus.state().borrow().session_revision, 0);
     assert_eq!(bus.persisted_session_revision(), 0);
 }

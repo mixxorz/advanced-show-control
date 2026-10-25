@@ -956,11 +956,11 @@ fn scope_toggle(
 }
 
 fn selected_scene(snapshot: &AppViewState) -> Option<&SceneConfig> {
-    let selected = snapshot.selected_scene_internal_id.as_deref()?;
+    let selected = snapshot.selected_scene_internal_id?;
     snapshot
         .scene_configs
         .iter()
-        .find(|scene| scene.internal_scene_id.to_string() == selected)
+        .find(|scene| scene.internal_scene_id == selected)
 }
 
 fn cued_scene_id(snapshot: &AppViewState) -> Option<Uuid> {

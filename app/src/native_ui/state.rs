@@ -325,41 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn go_capacity_releases_only_once_for_matching_completions_not_projections() {
-        let mut guard = GoSubmissionGuard::default();
-        for command_id in 1..=GO_SUBMISSION_CAPACITY as u64 {
-            guard.start(command_id, 10, 0, Uuid::from_u128(command_id.into()));
-        }
-        assert!(!guard.can_submit());
-        let initial = snapshot(10, "Show");
-        assert!(!guard.finish(999, None, &initial));
-        assert!(!guard.can_submit());
-
-        assert!(guard.finish(1, Some(Uuid::from_u128(1)), &initial));
-        assert!(guard.can_submit());
-        guard.start(9, 10, 0, Uuid::from_u128(9));
-        assert!(!guard.can_submit());
-        assert!(!guard.finish(1, Some(Uuid::from_u128(1)), &initial));
-        assert!(
-            !guard.can_submit(),
-            "duplicate completion must not release a second slot"
-        );
-
-        let advanced = cue_snapshot(11, Uuid::from_u128(8), None);
-        assert!(guard.observe_snapshot(&advanced));
-        assert_eq!(guard.presentation_pending_count(), 1);
-        assert!(
-            !guard.can_submit(),
-            "projection must not release command capacity"
-        );
-        assert!(guard.finish(9, None, &advanced));
-        assert!(
-            guard.can_submit(),
-            "matching failure also releases its slot"
-        );
-    }
-
-    #[test]
     fn session_replacement_discards_success_waiting_for_its_projection() {
         let recalled_entry_id = Uuid::from_u128(1);
         let old_snapshot = AppViewState {

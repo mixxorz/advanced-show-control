@@ -138,9 +138,7 @@ pub fn import_show_file(
             scope_toggles: config.scope_toggles.clone(),
         })
         .collect::<Vec<_>>();
-    let selected_scene_internal_id = scene_configs
-        .first()
-        .map(|config| config.internal_scene_id.to_string());
+    let selected_scene_internal_id = scene_configs.first().map(|config| config.internal_scene_id);
     let snapshot = SceneDocument {
         scene_configs,
         selected_scene_internal_id,
@@ -385,11 +383,7 @@ mod tests {
         );
         assert_eq!(
             imported.snapshot.selected_scene_internal_id,
-            Some(
-                imported.snapshot.scene_configs[0]
-                    .internal_scene_id
-                    .to_string()
-            )
+            Some(imported.snapshot.scene_configs[0].internal_scene_id)
         );
         assert!(imported.generated_internal_scene_ids);
     }

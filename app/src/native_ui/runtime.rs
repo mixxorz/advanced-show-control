@@ -61,7 +61,7 @@ impl NativeRuntime {
             let event_bus = AppEventBus::default();
             let logging = logging::init_logging(&app_config_dir)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            logging.spawn_settings_watcher(event_bus.state());
+            logging.spawn_settings_watcher(event_bus.subscribe());
             let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
             let (settings, settings_task, initial_settings) =
                 build_settings_actor(app_config_dir, event_bus.clone());

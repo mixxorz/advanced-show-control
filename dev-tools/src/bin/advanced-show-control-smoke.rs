@@ -320,8 +320,6 @@ impl Runner<'_> {
         let selected = result
             .selected_scene_internal_id
             .ok_or("new show selected no scene")?;
-        let selected = Uuid::parse_str(&selected)
-            .map_err(|error| format!("new show selected an invalid scene id: {error}"))?;
         let state = self
             .wait_state("new show selected Smoke A", move |state| {
                 new_session_ready(state, selected)
@@ -770,7 +768,7 @@ fn is_lockout_rejection(error: &str) -> bool {
 }
 
 fn new_session_ready(state: &AppViewState, selected: Uuid) -> bool {
-    state.selected_scene_internal_id.as_deref() == Some(selected.to_string().as_str())
+    state.selected_scene_internal_id == Some(selected)
         && find_named(state, 0, SMOKE_A).is_some_and(|scene| scene.internal_scene_id == selected)
         && find_named(state, 1, SMOKE_B).is_some()
 }
@@ -874,7 +872,7 @@ mod tests {
         let selected_scene = Uuid::new_v4();
         let scene_b = Uuid::new_v4();
         let mut state = AppViewState {
-            selected_scene_internal_id: Some(previous_scene.to_string()),
+            selected_scene_internal_id: Some(previous_scene),
             scene_configs: vec![
                 SceneConfig {
                     internal_scene_id: previous_scene,
@@ -900,7 +898,7 @@ mod tests {
 
         assert!(!new_session_ready(&state, selected_scene));
         state.scene_configs[0].internal_scene_id = selected_scene;
-        state.selected_scene_internal_id = Some(selected_scene.to_string());
+        state.selected_scene_internal_id = Some(selected_scene);
         assert!(new_session_ready(&state, selected_scene));
     }
 

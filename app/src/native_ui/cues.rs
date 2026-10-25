@@ -647,8 +647,7 @@ impl CueListsView {
             scene.scene_index == Some(current.index) && scene.scene_name == current.name
         });
         let scene_id = scene.internal_scene_id;
-        let selected = self.snapshot.selected_scene_internal_id.as_deref()
-            == Some(scene_id.to_string().as_str());
+        let selected = self.snapshot.selected_scene_internal_id == Some(scene_id);
         let name: SharedString = scene.scene_name.clone().into();
         let selection_label = if selected {
             "Selected scene"
@@ -2016,11 +2015,11 @@ fn active_cue_list(snapshot: &AppViewState) -> Option<&CueList> {
 }
 
 fn selected_scene_config(snapshot: &AppViewState) -> Option<&SceneConfig> {
-    let selected_id = snapshot.selected_scene_internal_id.as_deref()?;
+    let selected_id = snapshot.selected_scene_internal_id?;
     snapshot
         .scene_configs
         .iter()
-        .find(|scene| scene.internal_scene_id.to_string() == selected_id)
+        .find(|scene| scene.internal_scene_id == selected_id)
 }
 
 fn scene_by_id(snapshot: &AppViewState, scene_id: Uuid) -> Option<&SceneConfig> {

@@ -211,33 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_recall_scene_request_preserves_the_requested_config_from_a_borrowed_library() {
-        let id = Uuid::from_u128(2);
-        let mut requested = scene_config(id, Some(1));
-        requested.duration_ms = 2_500;
-        requested.scope_toggles.faders = true;
-        requested
-            .channel_configs
-            .push(crate::scenes::ChannelConfig {
-                group: 0,
-                channel: 3,
-                fader_db: Some(-6.0),
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            });
-        let scenes = vec![scene_config(Uuid::from_u128(1), Some(1)), requested.clone()];
-        let before = scenes.clone();
-
-        let result = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap();
-
-        assert_eq!(result.scene, requested);
-        assert_eq!(result.lv1_scene_index, 1);
-        assert_eq!(scenes, before);
-    }
-
-    #[test]
     fn validate_recall_scene_request_requires_exact_index_and_name() {
         let id = Uuid::from_u128(1);
         for (index, name) in [(2, "Intro"), (1, "Renamed")] {

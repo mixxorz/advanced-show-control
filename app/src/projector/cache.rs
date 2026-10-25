@@ -257,7 +257,7 @@ impl ProjectionCache {
             active_cue_list_id: state.cue_lists.document.active_cue_list_id,
             current_cue_entry_id: state.cue_lists.current_cue_entry_id,
             cued_cue_entry_id: state.cue_lists.document.cued_cue_entry_id,
-            selected_scene_internal_id: state.scenes.selected_scene_internal_id.clone(),
+            selected_scene_internal_id: state.scenes.selected_scene_internal_id,
             show_file_name: state.show.show_file_name.clone(),
             show_file_path: state
                 .show
@@ -373,7 +373,7 @@ mod tests {
                     scoped_channels: vec![],
                     scope_toggles: Default::default(),
                 }],
-                selected_scene_internal_id: Some("scene-config".to_string()),
+                selected_scene_internal_id: Some(uuid::Uuid::from_u128(1)),
                 scene_settings_clipboard_available: true,
                 ready_generation: Some(0),
             },
@@ -445,8 +445,8 @@ mod tests {
         assert_eq!(snapshot.scene_configs.len(), 1);
         assert_eq!(snapshot.cue_lists[0].name, "Main");
         assert_eq!(
-            snapshot.selected_scene_internal_id.as_deref(),
-            Some("scene-config")
+            snapshot.selected_scene_internal_id,
+            Some(uuid::Uuid::from_u128(1))
         );
         assert_eq!(snapshot.logs[0].message, "kept");
         assert!(snapshot.state_version > version_a);
@@ -590,7 +590,9 @@ mod tests {
                     scoped_channels: vec![],
                     scope_toggles: Default::default(),
                 }],
-                selected_scene_internal_id: Some("selected-id".to_string()),
+                selected_scene_internal_id: Some(uuid::Uuid::from_u128(
+                    0x11111111111141118111111111111111,
+                )),
                 scene_settings_clipboard_available: true,
                 ready_generation: Some(0),
             },
@@ -602,8 +604,8 @@ mod tests {
         assert!(snapshot.lockout);
         assert_eq!(snapshot.scene_configs.len(), 1);
         assert_eq!(
-            snapshot.selected_scene_internal_id.as_deref(),
-            Some("selected-id")
+            snapshot.selected_scene_internal_id,
+            Some(uuid::Uuid::from_u128(0x11111111111141118111111111111111))
         );
         assert!(snapshot.scene_settings_clipboard_available);
     }

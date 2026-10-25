@@ -61,7 +61,7 @@ enum RecallGate {
 #[derive(Debug, Default)]
 pub struct ScenesState {
     scene_configs: Vec<SceneConfig>,
-    selected_scene_internal_id: Option<String>,
+    selected_scene_internal_id: Option<uuid::Uuid>,
     scene_settings_clipboard: Option<SceneSettingsClipboard>,
     ready_generation: Option<u64>,
     gate: RecallGate,
@@ -73,7 +73,7 @@ impl ScenesState {
     pub(crate) fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
-            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+            selected_scene_internal_id: self.selected_scene_internal_id,
             scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
             ready_generation: self.ready_generation,
         }
@@ -81,14 +81,14 @@ impl ScenesState {
 
     /**
      * @cc [owner:mixxorz,label:persistence] scene-document-snapshot
-     * The persisted scene document MUST contain scene configs and selection, and MUST exclude
-     * connection-derived readiness, recall tracking, scene-list suppression, and the settings
-     * clipboard.
+     * The owner scene document MUST contain scene configs and UUID-or-absent selection, and MUST
+     * exclude connection-derived readiness, recall tracking, scene-list suppression, and the
+     * settings clipboard.
      */
     pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
-            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+            selected_scene_internal_id: self.selected_scene_internal_id,
         }
     }
 
@@ -161,7 +161,7 @@ impl ScenesState {
         {
             return Err("Scene config not found".to_string());
         }
-        let next = Some(internal_scene_id.to_string());
+        let next = Some(internal_scene_id);
         if self.selected_scene_internal_id == next {
             return Ok(false);
         }
@@ -256,9 +256,7 @@ impl ScenesState {
             }
             let removed_internal_scene_id = self.scene_configs[target_index].internal_scene_id;
             self.scene_configs.remove(target_index);
-            if self.selected_scene_internal_id.as_deref()
-                == Some(&removed_internal_scene_id.to_string())
-            {
+            if self.selected_scene_internal_id == Some(removed_internal_scene_id) {
                 self.selected_scene_internal_id = None;
             }
         }
@@ -301,7 +299,7 @@ impl ScenesState {
             return Err("Scene config not found".to_string());
         };
         self.scene_configs.remove(index);
-        if self.selected_scene_internal_id.as_deref() == Some(&internal_scene_id.to_string()) {
+        if self.selected_scene_internal_id == Some(internal_scene_id) {
             self.selected_scene_internal_id = None;
         }
         Ok(true)
@@ -719,14 +717,14 @@ mod tests {
     #[test]
     fn snapshot_round_trips_selected_scene_internal_id() {
         let mut state = ScenesState {
-            selected_scene_internal_id: Some("scene-123".to_string()),
+            selected_scene_internal_id: Some(uuid::Uuid::from_u128(123)),
             ..Default::default()
         };
 
         let snapshot = state.snapshot();
         assert_eq!(
             snapshot.selected_scene_internal_id,
-            Some("scene-123".to_string())
+            Some(uuid::Uuid::from_u128(123))
         );
 
         state.selected_scene_internal_id = None;
@@ -734,7 +732,7 @@ mod tests {
 
         assert_eq!(
             state.selected_scene_internal_id,
-            Some("scene-123".to_string())
+            Some(uuid::Uuid::from_u128(123))
         );
     }
 
@@ -1022,10 +1020,7 @@ mod tests {
         state.mark_scene_library_unavailable();
         let projection = state.projection_state();
         assert_eq!(projection.scene_configs[0].internal_scene_id, source_id);
-        assert_eq!(
-            projection.selected_scene_internal_id,
-            Some(source_id.to_string())
-        );
+        assert_eq!(projection.selected_scene_internal_id, Some(source_id));
         assert!(projection.scene_settings_clipboard_available);
         assert_eq!(projection.ready_generation, None);
     }

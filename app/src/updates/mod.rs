@@ -57,7 +57,7 @@ pub struct UpdateInstallPlan {
 }
 struct PlanAuthority {
     settings: tokio::sync::watch::Receiver<crate::runtime::AppStateSnapshot>,
-    expected_revision: u64,
+    nightly: bool,
 }
 impl std::fmt::Debug for UpdateInstallPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,9 +66,8 @@ impl std::fmt::Debug for UpdateInstallPlan {
 }
 impl UpdateInstallPlan {
     /// @cc [owner:mixxorz,label:safety] issued-update-plan-authority
-    /// Launch MUST reject a plan whose retained channel-policy revision differs from issuance,
-    /// including coalesced channel toggles returning to the original policy. All copies MUST
-    /// remain invalid after any channel-policy change.
+    /// Launch MUST reject a plan whose channel differs from the current retained update channel.
+    /// Returning to the plan's channel MAY make it usable again; intervening toggles are not history.
     pub fn launch_after_exit(self) -> Result<(), String> {
         self.validate()?;
         (self.launch)()
@@ -76,7 +75,7 @@ impl UpdateInstallPlan {
 
     fn validate(&self) -> Result<(), String> {
         let valid = self.authority.as_ref().is_some_and(|authority| {
-            authority.settings.borrow().update_channel_revision == authority.expected_revision
+            authority.settings.borrow().settings.include_nightly_updates == authority.nightly
         });
         if valid {
             Ok(())
@@ -85,10 +84,10 @@ impl UpdateInstallPlan {
         }
     }
 
-    fn bind(mut self, bus: &crate::runtime::events::AppEventBus, expected_revision: u64) -> Self {
+    fn bind(mut self, bus: &crate::runtime::events::AppEventBus, nightly: bool) -> Self {
         self.authority = Some(Arc::new(PlanAuthority {
             settings: bus.state(),
-            expected_revision,
+            nightly,
         }));
         self
     }

@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tracing::{Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
@@ -18,8 +18,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::diagnostics::diagnostic_log_path;
 use crate::projector::LogSeverity;
-use crate::runtime::AppStateSnapshot;
-use crate::settings::AppSettings;
+use crate::runtime::events::{AppEvent, log_lagged_subscriber};
+use crate::settings::{AppSettings, SettingsEvent};
 
 const UI_SINK_TARGET: &str = "advanced_show_control::logging::ui_sink";
 
@@ -96,12 +96,20 @@ impl LoggingRuntime {
         apply_settings_to_diagnostic_file_gate(&self.diagnostic_file_gate, settings);
     }
 
-    pub fn spawn_settings_watcher(&self, mut state: watch::Receiver<AppStateSnapshot>) {
+    pub fn spawn_settings_watcher(&self, mut events: broadcast::Receiver<AppEvent>) {
         let gate = self.diagnostic_file_gate.clone();
         tokio::spawn(async move {
-            // Startup applies loaded settings synchronously; until then keep the bootstrap gate.
-            while state.changed().await.is_ok() {
-                apply_settings_to_diagnostic_file_gate(&gate, &state.borrow_and_update().settings);
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings })) => {
+                        apply_settings_to_diagnostic_file_gate(&gate, &settings);
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("logging-settings", count);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
             tracing::debug!(
                 event = "logging_settings_watcher_stopped",
@@ -401,111 +409,58 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn settings_watcher_keeps_latest_file_policy_when_broadcast_lags() {
-        use crate::runtime::events::{AppEvent, AppEventBus};
-        use crate::settings::SettingsEvent;
-
-        let path = std::env::temp_dir().join(format!("asc-logging-{}.log", uuid::Uuid::new_v4()));
-        let file = fs::File::create(&path).unwrap();
-        let stdout = Arc::new(Mutex::new(Vec::new()));
-        let stdout_capture = stdout.clone();
+    #[test]
+    fn diagnostics_setting_filters_emitted_records_without_changing_ui_delivery() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer_capture = captured.clone();
         let gate = DiagnosticFileGate::bootstrap_debug();
-        let (ui_logs, mut ui_rx) = broadcast::channel(16);
-        let (_, guard) = tracing_appender::non_blocking(std::io::sink());
-        let logging = LoggingRuntime {
-            guard,
-            ui_logs: ui_logs.clone(),
-            diagnostic_file_gate: gate.clone(),
-        };
-        let dispatch = tracing::Dispatch::new(
-            registry()
-                .with(
-                    fmt::layer()
-                        .with_ansi(false)
-                        .with_writer(move || file.try_clone().unwrap())
-                        .with_filter(gate),
-                )
-                .with(
-                    fmt::layer()
-                        .with_ansi(false)
-                        .with_writer(move || CapturedWriter(stdout_capture.clone()))
-                        .with_filter(LevelFilter::DEBUG),
-                )
-                .with(UiLogLayer { tx: ui_logs }),
-        );
-        let bus = AppEventBus::new(1);
-        let mut broadcast_events = bus.subscribe();
-        logging.spawn_settings_watcher(bus.state());
-        tokio::task::yield_now().await;
+        let (tx, mut ui_logs) = broadcast::channel(16);
+        let subscriber = registry()
+            .with(
+                fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(move || CapturedWriter(writer_capture.clone()))
+                    .with_filter(gate.clone()),
+            )
+            .with(UiLogLayer { tx });
 
-        let mut phases = Vec::new();
-        let mut emit = |phase: String| {
-            tracing::dispatcher::with_default(&dispatch, || {
-                tracing::debug!("diagnostic {phase}");
-                tracing::info!("visible {phase}");
-            });
-            let ui_event = ui_rx.try_recv().unwrap();
-            assert_eq!(ui_event.message, format!("visible {phase}"));
-            assert_eq!(ui_event.severity, LogSeverity::Info);
-            assert!(ui_rx.try_recv().is_err());
-            phases.push(phase);
-        };
-        emit("bootstrap".to_string());
-        assert!(
-            fs::read_to_string(&path)
-                .unwrap()
-                .contains("diagnostic bootstrap")
-        );
-        logging.apply_settings(&AppSettings::default());
-        emit("initial".to_string());
-        assert!(
-            !fs::read_to_string(&path)
-                .unwrap()
-                .contains("diagnostic initial")
-        );
-
-        for (phase, enabled) in [("enabled", true), ("disabled", false), ("reenabled", true)] {
-            bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-                settings: AppSettings {
-                    enable_extensive_diagnostics: enabled,
+        // Reuse the same callsites across settings changes, including re-enabling DEBUG.
+        fn emit(phase: &str) {
+            tracing::debug!("diagnostic {phase}");
+            tracing::info!("visible {phase}");
+        }
+        with_default(subscriber, || {
+            emit("bootstrap");
+            apply_settings_to_diagnostic_file_gate(
+                &gate,
+                &crate::settings::AppSettings {
+                    enable_extensive_diagnostics: false,
                     ..Default::default()
                 },
-            }));
-            bus.publish_runtime_generation_changed(1);
-            bus.publish_runtime_generation_changed(2);
-            assert!(matches!(
-                broadcast_events.try_recv(),
-                Err(broadcast::error::TryRecvError::Lagged(_))
-            ));
-
-            tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                for attempt in 0.. {
-                    let marker = format!("{phase}-{attempt}");
-                    emit(marker.clone());
-                    let file_output = fs::read_to_string(&path).unwrap();
-                    if file_output.contains(&format!("diagnostic {marker}")) == enabled {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("retained settings must determine diagnostic-file admission");
-        }
-
-        let stdout_output = String::from_utf8(stdout.lock().unwrap().clone()).unwrap();
-        for phase in phases {
-            assert!(stdout_output.contains(&format!("diagnostic {phase}")));
-            assert!(stdout_output.contains(&format!("visible {phase}")));
-            assert!(
-                fs::read_to_string(&path)
-                    .unwrap()
-                    .contains(&format!("visible {phase}"))
             );
+            emit("disabled");
+            apply_settings_to_diagnostic_file_gate(
+                &gate,
+                &crate::settings::AppSettings {
+                    enable_extensive_diagnostics: true,
+                    ..Default::default()
+                },
+            );
+            emit("enabled");
+        });
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("diagnostic bootstrap"));
+        assert!(!output.contains("diagnostic disabled"));
+        assert!(output.contains("diagnostic enabled"));
+        for phase in ["bootstrap", "disabled", "enabled"] {
+            let message = format!("visible {phase}");
+            assert!(output.contains(&message));
+            let event = ui_logs.try_recv().unwrap();
+            assert_eq!(event.message, message);
+            assert_eq!(event.severity, LogSeverity::Info);
         }
-        drop(dispatch);
-        fs::remove_file(path).unwrap();
+        assert!(ui_logs.try_recv().is_err());
     }
 
     #[test]

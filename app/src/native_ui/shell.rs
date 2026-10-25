@@ -561,12 +561,25 @@ mod tests {
         assert!(!guard.can_submit());
 
         let snapshot = AppViewState::default();
-        assert!(guard.finish(1, None, &snapshot));
+        assert!(!guard.finish(99, None, &snapshot));
+        assert!(!guard.can_submit());
+        assert!(guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
         assert!(guard.can_submit());
         guard.start(9, 0, 0, Uuid::from_u128(9));
+        assert!(!guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
         assert!(!guard.can_submit());
-        assert!(!guard.finish(1, None, &snapshot));
-        assert!(!guard.finish(99, None, &snapshot));
+        let advanced = AppViewState {
+            state_version: 1,
+            current_cue_entry_id: Some(Uuid::from_u128(8)),
+            ..Default::default()
+        };
+        assert!(guard.observe_snapshot(&advanced));
+        assert!(
+            !guard.can_submit(),
+            "projection does not release command capacity"
+        );
+        assert!(guard.finish(9, None, &advanced));
+        assert!(guard.can_submit());
     }
 
     #[test]

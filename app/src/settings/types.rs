@@ -18,11 +18,7 @@ mod tests {
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
         assert_eq!(settings.asc_recall_interval_ms, 0);
-    }
-
-    #[test]
-    fn default_settings_are_already_normalized() {
-        assert_eq!(AppSettings::default().normalized(), AppSettings::default());
+        assert_eq!(settings.clone().normalized(), settings);
     }
 
     #[test]
