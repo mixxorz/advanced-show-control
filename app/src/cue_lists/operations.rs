@@ -161,8 +161,7 @@ impl CueLists {
      * @cc [owner:mixxorz,label:product;safety] inline-cue-scene-validation
      * Edit and insert MUST reject scene UUIDs absent from the owner's current scene library
      * without modifying or publishing the cue document. Changed edits and inserts MUST publish
-     * persisted cue facts; unchanged edits and errors MUST NOT publish them. Commands MUST reject
-     * a session revision different from the retained replacement epoch before any mutation.
+     * persisted cue facts; unchanged edits and errors MUST NOT publish them.
      */
     pub fn dispatch(&mut self, command: CueListsCommand, scenes: &[crate::scenes::SceneConfig]) {
         let state = &mut self.state;
@@ -220,16 +219,13 @@ impl CueLists {
                     }),
             ),
             CueListsCommand::EditCueEntry {
-                expected_session_revision,
                 cue_list_id,
                 cue_entry_id,
                 scene_internal_id,
                 reply,
             } => (
                 reply,
-                if expected_session_revision != self.event_bus.state().borrow().session_revision {
-                    Err("Cue edit canceled: session was replaced".to_string())
-                } else if scenes
+                if scenes
                     .iter()
                     .any(|scene| scene.internal_scene_id == scene_internal_id)
                 {
@@ -241,7 +237,6 @@ impl CueLists {
                 },
             ),
             CueListsCommand::InsertCueEntry {
-                expected_session_revision,
                 cue_list_id,
                 scene_internal_id,
                 insert_index,
@@ -249,9 +244,7 @@ impl CueLists {
                 reply,
             } => (
                 reply,
-                if expected_session_revision != self.event_bus.state().borrow().session_revision {
-                    Err("Cue edit canceled: session was replaced".to_string())
-                } else if scenes
+                if scenes
                     .iter()
                     .any(|scene| scene.internal_scene_id == scene_internal_id)
                 {

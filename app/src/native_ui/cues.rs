@@ -112,7 +112,6 @@ enum CueEditorMode {
 
 struct CueEditor {
     list_id: Uuid,
-    session_revision: u64,
     mode: CueEditorMode,
     marker: Option<CueMarker>,
     highlighted: usize,
@@ -288,10 +287,6 @@ impl CueListsView {
         cx: &mut Context<Self>,
     ) {
         let nested_editor_was_open = self.pending_delete.is_some() || self.name_editor.is_some();
-        if self.snapshot.session_revision != snapshot.session_revision {
-            self.close_cue_editor(window, cx);
-            self.hovered_gap = None;
-        }
         self.snapshot = snapshot;
         if let Some(editor) = &mut self.cue_editor {
             let list = active_cue_list(&self.snapshot);
@@ -436,7 +431,6 @@ impl CueListsView {
         self.hovered_gap = None;
         self.cue_editor = Some(CueEditor {
             list_id,
-            session_revision: self.snapshot.session_revision,
             mode,
             marker,
             highlighted: 0,
@@ -485,7 +479,6 @@ impl CueListsView {
             return;
         };
         let list_id = editor.list_id;
-        let session_revision = editor.session_revision;
         let mode = editor.mode;
         let index = editor.marker.as_ref().map(CueMarker::index);
         let order: Vec<_> = self.active_entries().iter().map(|entry| entry.id).collect();
@@ -494,7 +487,7 @@ impl CueListsView {
                 self.dispatcher
                     .dispatch_persisted_edit(move |commands| async move {
                         commands
-                            .edit_cue_entry(list_id, entry_id, scene_id, session_revision)
+                            .edit_cue_entry(list_id, entry_id, scene_id)
                             .await
                             .map(|_| ())
                     })
@@ -503,13 +496,7 @@ impl CueListsView {
                 self.dispatcher
                     .dispatch_persisted_edit(move |commands| async move {
                         commands
-                            .insert_cue_entry(
-                                list_id,
-                                scene_id,
-                                index.unwrap_or(0),
-                                order,
-                                session_revision,
-                            )
+                            .insert_cue_entry(list_id, scene_id, index.unwrap_or(0), order)
                             .await
                             .map(|_| ())
                     })

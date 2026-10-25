@@ -158,36 +158,10 @@ impl ApplicationCommandContext {
         receive(response).await
     }
 
-    pub fn persisted_session_revision(&self) -> u64 {
-        self.lifecycle.persisted_session_revision()
-    }
-
-    pub fn admit_persisted_session_revision<T>(
-        &self,
-        expected_revision: u64,
-        admit: impl FnOnce() -> T,
-    ) -> Option<T> {
-        self.lifecycle
-            .admit_persisted_session_revision(expected_revision, admit)
-    }
-
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
             .await?;
-        receive_nested(response).await
-    }
-
-    pub async fn guarded_new_show_file(
-        &self,
-        expected_persisted_revision: u64,
-    ) -> Result<NewShowFileResult, String> {
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedNewShowFileFromCurrentLv1 {
-            expected_persisted_revision,
-            reply: Some(reply),
-        })
-        .await?;
         receive_nested(response).await
     }
 
@@ -210,24 +184,6 @@ impl ApplicationCommandContext {
         receive_nested(response).await.map(Some)
     }
 
-    pub async fn guarded_open_show_file(
-        &self,
-        path: Option<PathBuf>,
-        expected_persisted_revision: u64,
-    ) -> Result<Option<LoadShowFileResult>, String> {
-        let Some(path) = path else {
-            return Ok(None);
-        };
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedLoadShowFileFromPath {
-            path,
-            expected_persisted_revision,
-            reply: Some(reply),
-        })
-        .await?;
-        receive_nested(response).await.map(Some)
-    }
-
     /// A missing path means the host picker was cancelled without changing the current session.
     pub async fn new_show_file_from_template(
         &self,
@@ -239,24 +195,6 @@ impl ApplicationCommandContext {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromTemplate {
             path,
-            reply: Some(reply),
-        })
-        .await?;
-        receive_nested(response).await.map(Some)
-    }
-
-    pub async fn guarded_new_show_file_from_template(
-        &self,
-        path: Option<PathBuf>,
-        expected_persisted_revision: u64,
-    ) -> Result<Option<NewShowFileResult>, String> {
-        let Some(path) = path else {
-            return Ok(None);
-        };
-        let (reply, response) = oneshot::channel();
-        self.send_show(ShowCommand::GuardedNewShowFileFromTemplate {
-            path,
-            expected_persisted_revision,
             reply: Some(reply),
         })
         .await?;
@@ -543,10 +481,8 @@ impl ApplicationCommandContext {
         cue_list_id: Uuid,
         cue_entry_id: Uuid,
         scene_internal_id: Uuid,
-        expected_session_revision: u64,
     ) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::EditCueEntry {
-            expected_session_revision,
             cue_list_id,
             cue_entry_id,
             scene_internal_id,
@@ -561,10 +497,8 @@ impl ApplicationCommandContext {
         scene_internal_id: Uuid,
         insert_index: usize,
         expected_entry_ids: Vec<Uuid>,
-        expected_session_revision: u64,
     ) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::InsertCueEntry {
-            expected_session_revision,
             cue_list_id,
             scene_internal_id,
             insert_index,
@@ -882,7 +816,6 @@ mod tests {
                     show_file_path: Some(PathBuf::from("authoritative.ascs")),
                     show_file_name: "authoritative.ascs".to_string(),
                     show_file_dirty: true,
-                    persisted_session_revision: 7,
                 })
                 .unwrap();
         });
@@ -894,7 +827,6 @@ mod tests {
         );
         assert!(state.show_file_dirty);
         assert_eq!(state.show_file_name, "authoritative.ascs");
-        assert_eq!(state.persisted_session_revision, 7);
         actor.await.unwrap();
     }
 

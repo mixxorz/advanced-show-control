@@ -109,7 +109,6 @@ mod macos {
                 go_submissions.borrow_mut().start(
                     u64::MAX,
                     0,
-                    0,
                     Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
                 );
                 let scenes =

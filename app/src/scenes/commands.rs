@@ -12,23 +12,11 @@ pub enum ScenesCommand {
     },
     /// @cc [owner:mixxorz,label:persistence] session-replacement-single-owner-turn
     /// Session replacement MUST commit scene and cue documents in one owner turn under the
-    /// replacement ticket and expected-generation check, cancel queued recall and cue-advance
-    /// intent without aborting an active fade, and publish one combined `SessionReplaced`
-    /// projection.
+    /// replacement ticket and expected-generation check, reset old-document recall intent without
+    /// aborting an active fade, and publish one combined `SessionReplaced` projection.
     ReplaceSessionDocument {
         replacement: crate::session::SessionReplacement,
         expected_generation: u64,
-        reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
-    },
-    /// @cc [owner:mixxorz,label:persistence;concurrency] guarded-session-replacement-admission
-    /// The exact persisted revision and generation MUST both remain valid at the synchronous commit.
-    /// Scenes MUST hold the persisted-revision gate across the bounded in-memory scene/cue
-    /// replacement and combined `SessionReplaced` publication. Mismatch MUST leave both documents
-    /// unchanged.
-    GuardedReplaceSessionDocument {
-        replacement: crate::session::SessionReplacement,
-        expected_generation: u64,
-        expected_persisted_revision: u64,
         reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
     },
     GetSceneConfig {

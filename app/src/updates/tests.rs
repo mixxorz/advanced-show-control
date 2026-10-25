@@ -540,6 +540,4 @@ async fn coalesced_channel_toggles_accept_worker_for_the_current_channel() {
     check.reply.send(Ok(checked(None))).ok().unwrap();
     status(&bus, UpdateStatus::UpToDate).await;
     assert!(requests.try_recv().is_err());
-    assert_eq!(bus.state().borrow().session_revision, 0);
-    assert_eq!(bus.persisted_session_revision(), 0);
 }

@@ -20,7 +20,6 @@ pub(super) struct GoSubmissionGuard {
 struct GoPresentationEntry {
     command_id: u64,
     started_state_version: u64,
-    started_session_revision: u64,
     intended_entry_id: Option<Uuid>,
     command_succeeded: bool,
     snapshot_acknowledged: bool,
@@ -42,13 +41,7 @@ impl GoSubmissionGuard {
             .count()
     }
 
-    pub fn start(
-        &mut self,
-        command_id: u64,
-        state_version: u64,
-        session_revision: u64,
-        intended_entry_id: Uuid,
-    ) {
+    pub fn start(&mut self, command_id: u64, state_version: u64, intended_entry_id: Uuid) {
         debug_assert!(self.can_submit());
         debug_assert!(
             !self
@@ -59,7 +52,6 @@ impl GoSubmissionGuard {
         self.presentation_queue.push_back(GoPresentationEntry {
             command_id,
             started_state_version: state_version,
-            started_session_revision: session_revision,
             intended_entry_id: Some(intended_entry_id),
             command_succeeded: false,
             snapshot_acknowledged: false,
@@ -97,13 +89,6 @@ impl GoSubmissionGuard {
     }
 
     pub fn observe_snapshot(&mut self, snapshot: &AppViewState) -> bool {
-        if self
-            .presentation_queue
-            .iter()
-            .any(|entry| entry.started_session_revision != snapshot.session_revision)
-        {
-            return self.invalidate();
-        }
         let Some(current_entry_id) = snapshot.current_cue_entry_id else {
             return false;
         };
@@ -123,12 +108,6 @@ impl GoSubmissionGuard {
             entry.snapshot_acknowledged = true;
         }
         self.prune_acknowledged_successes();
-        changed
-    }
-
-    pub fn invalidate(&mut self) -> bool {
-        let changed = !self.presentation_queue.is_empty();
-        self.presentation_queue.clear();
         changed
     }
 
@@ -308,7 +287,7 @@ mod tests {
         let advanced_snapshot = cue_snapshot(11, recalled_entry_id, Some(next_entry_id));
 
         let mut completion_first = GoSubmissionGuard::default();
-        completion_first.start(1, old_snapshot.state_version, 0, recalled_entry_id);
+        completion_first.start(1, old_snapshot.state_version, recalled_entry_id);
         assert!(completion_first.finish(1, Some(recalled_entry_id), &old_snapshot));
         assert!(completion_first.can_submit());
         assert_eq!(completion_first.presentation_pending_count(), 1);
@@ -316,7 +295,7 @@ mod tests {
         assert_eq!(completion_first.presentation_pending_count(), 0);
 
         let mut projection_first = GoSubmissionGuard::default();
-        projection_first.start(1, old_snapshot.state_version, 0, recalled_entry_id);
+        projection_first.start(1, old_snapshot.state_version, recalled_entry_id);
         assert!(projection_first.observe_snapshot(&advanced_snapshot));
         assert_eq!(projection_first.presentation_pending_count(), 0);
         assert!(projection_first.finish(1, Some(recalled_entry_id), &advanced_snapshot));
@@ -325,41 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn session_replacement_discards_success_waiting_for_its_projection() {
-        let recalled_entry_id = Uuid::from_u128(1);
-        let old_snapshot = AppViewState {
-            state_version: 10,
-            cued_cue_entry_id: Some(recalled_entry_id),
-            ..Default::default()
-        };
-        let mut guard = GoSubmissionGuard::default();
-        guard.start(1, old_snapshot.state_version, 0, recalled_entry_id);
-        assert!(guard.finish(1, Some(recalled_entry_id), &old_snapshot));
-        assert_eq!(guard.presentation_pending_count(), 1);
-
-        let replacement = AppViewState {
-            state_version: 11,
-            session_revision: 1,
-            ..Default::default()
-        };
-        assert!(guard.observe_snapshot(&replacement));
-        assert_eq!(guard.presentation_pending_count(), 0);
-        assert!(guard.can_submit());
-
-        let mut completion_late = GoSubmissionGuard::default();
-        completion_late.start(2, old_snapshot.state_version, 0, recalled_entry_id);
-        assert!(completion_late.observe_snapshot(&replacement));
-        assert!(!completion_late.finish(2, None, &replacement));
-    }
-
-    #[test]
     fn late_failure_reconciles_a_later_success_against_the_latest_projection() {
         let recalled_entry_id = Uuid::from_u128(1);
         let next_entry_id = Uuid::from_u128(2);
         let advanced_snapshot = cue_snapshot(11, recalled_entry_id, Some(next_entry_id));
         let mut guard = GoSubmissionGuard::default();
-        guard.start(1, 10, 0, recalled_entry_id);
-        guard.start(2, 10, 0, next_entry_id);
+        guard.start(1, 10, recalled_entry_id);
+        guard.start(2, 10, next_entry_id);
 
         assert!(guard.finish(2, Some(recalled_entry_id), &advanced_snapshot));
         assert_eq!(guard.presentation_pending_count(), 0);

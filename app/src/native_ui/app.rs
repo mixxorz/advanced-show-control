@@ -130,6 +130,7 @@ impl AppRoot {
             false,
         ));
 
+        let session_guard = SessionGuard::new(dispatcher.session_transition_indicator());
         Self {
             presentation: PresentationState::default(),
             dispatcher,
@@ -142,7 +143,7 @@ impl AppRoot {
             latest_snapshot,
             go_submissions,
             pending_save_command_id: Cell::new(None),
-            session_guard: RefCell::new(SessionGuard::default()),
+            session_guard: RefCell::new(session_guard),
             pending_update_preparation: Cell::new(None),
             pending_update_install: RefCell::new(None),
         }
@@ -181,14 +182,6 @@ impl AppRoot {
         .detach();
     }
 
-    /// @cc [owner:mixxorz,label:persistence;ordering] query-epoch-check-and-continuation-atomic
-    /// A session-state query result MUST compare both its captured persisted-edit submission epoch
-    /// and authoritative owner-side persisted revision with their current values, then either
-    /// enqueue a retry or apply the guard result in this same GPUI callback, without yielding to a
-    /// UI submission or owner fact between comparison and continuation dispatch. A clean result
-    /// MUST carry its validated owner revision into guarded replacement or quit admission; this UI
-    /// comparison alone MUST NOT authorize the destructive action. If any modal surface is active,
-    /// it MUST cancel instead.
     fn handle_event(&mut self, event: UiEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             UiEvent::Snapshot(snapshot) => {
@@ -244,24 +237,8 @@ impl AppRoot {
                 self.finish_command_event(command_id, result, window, cx);
                 self.apply_guard_effect(guard_effect, window, cx);
             }
-            UiEvent::CueRecallFinished {
-                command_id,
-                session_revision,
-                canceled_by_session_replacement,
-                result,
-            } => {
+            UiEvent::CueRecallFinished { command_id, result } => {
                 let snapshot = self.latest_snapshot.borrow();
-                if !cue_completion_matches_session(session_revision, &snapshot) {
-                    return;
-                }
-                if canceled_by_session_replacement {
-                    drop(snapshot);
-                    self.go_submissions.borrow_mut().invalidate();
-                    self.cue_lists.update(cx, |_, cx| cx.notify());
-                    self.shell.update(cx, |_, cx| cx.notify());
-                    self.finish_command_event(command_id, Ok(()), window, cx);
-                    return;
-                }
                 let recalled_entry_id = result.as_ref().ok().map(|result| result.recalled_entry_id);
                 if !self.go_submissions.borrow_mut().finish(
                     command_id,
@@ -286,45 +263,36 @@ impl AppRoot {
                     }
                 }
             }
-            UiEvent::SessionStateQueryFinished {
-                query_id,
-                persisted_edit_epoch,
-                result,
-            } => {
+            UiEvent::SessionStateQueryFinished { query_id, result } => {
+                let result = result.map(|state| SessionStatus {
+                    path: state.show_file_path,
+                    name: state.show_file_name,
+                    dirty: state.show_file_dirty,
+                });
+                let effect = self
+                    .session_guard
+                    .borrow_mut()
+                    .state_query_finished(query_id, result);
+                if effect == GuardEffect::None {
+                    return;
+                }
                 if modal_surface_active(
                     window.has_active_prompt(),
                     window.has_active_dialog(cx),
                     self.connection.borrow().is_visible() || self.shell.read(cx).modal_open(cx),
                 ) {
-                    if self.session_guard.borrow_mut().cancel_pending() {
-                        window.push_notification(
-                            Notification::error(
-                                "The session action was cancelled because another dialog opened.",
-                            ),
-                            cx,
-                        );
-                    }
-                    return;
-                }
-                let effect = if session_query_is_stale(
-                    persisted_edit_epoch,
-                    self.dispatcher.persisted_edit_epoch(),
-                    &result,
-                    self.dispatcher.persisted_session_revision(),
-                ) {
-                    self.session_guard.borrow_mut().state_query_stale(query_id)
+                    self.session_guard.borrow_mut().cancel_pending();
+                    self.apply_guard_effect(
+                        GuardEffect::Error(
+                            "The session action was cancelled because another dialog opened."
+                                .to_string(),
+                        ),
+                        window,
+                        cx,
+                    );
                 } else {
-                    let result = result.map(|state| SessionStatus {
-                        path: state.show_file_path,
-                        name: state.show_file_name,
-                        dirty: state.show_file_dirty,
-                        persisted_session_revision: state.persisted_session_revision,
-                    });
-                    self.session_guard
-                        .borrow_mut()
-                        .state_query_finished(query_id, result)
-                };
-                self.apply_guard_effect(effect, window, cx);
+                    self.apply_guard_effect(effect, window, cx);
+                }
             }
             UiEvent::UpdateInstallPrepared { command_id, result } => {
                 if self.pending_update_preparation.get() != Some(command_id) {
@@ -351,12 +319,7 @@ impl AppRoot {
                     Err(_) => {}
                 }
             }
-            UiEvent::UpdateShutdownPrepared {
-                command_id,
-                expected_revision,
-                expected_edit_epoch,
-                result,
-            } => {
+            UiEvent::UpdateShutdownPrepared { command_id, result } => {
                 if self.pending_update_preparation.get() != Some(command_id) {
                     return;
                 }
@@ -367,25 +330,29 @@ impl AppRoot {
                     window,
                     cx,
                 );
-                if let Ok(plan) = result {
-                    if self.action_blocked(window, cx) {
+                match result {
+                    Ok(plan)
+                        if !window.has_active_prompt()
+                            && !self.modal_open(window, cx)
+                            && !self.shell.read(cx).shortcut_capture_active(cx) =>
+                    {
+                        self.arm_update_and_quit(plan, window, cx);
+                    }
+                    Ok(_) => {
+                        self.session_guard.borrow_mut().cancel_pending();
                         window.push_notification(
                             Notification::error(
                                 "The update was cancelled because another dialog opened.",
                             ),
                             cx,
                         );
-                    } else {
-                        *self.pending_update_install.borrow_mut() = Some(plan);
-                        self.arm_update_and_quit(
-                            expected_revision,
-                            expected_edit_epoch,
-                            window,
-                            cx,
-                        );
+                    }
+                    Err(_) => {
+                        self.session_guard.borrow_mut().cancel_pending();
                     }
                 }
             }
+
             UiEvent::LatencyMeasured {
                 session_id,
                 attempt_id,
@@ -530,26 +497,15 @@ impl AppRoot {
                 });
                 self.session_guard.borrow_mut().save_started(command_id);
             }
-            GuardEffect::Continue {
-                action,
-                expected_persisted_revision,
-            } => match (action, expected_persisted_revision) {
-                (SessionAction::New, Some(revision)) => self.guarded_new_show(revision),
-                (SessionAction::NewFromTemplate, revision) => {
-                    self.new_show_from_template(revision, cx)
+            GuardEffect::Continue(action) => match action {
+                SessionAction::New => self.new_show(),
+                SessionAction::NewFromTemplate => self.prompt_for_show_file(true, cx),
+                SessionAction::Open => self.prompt_for_show_file(false, cx),
+                SessionAction::Quit => {
+                    self.session_guard.borrow_mut().cancel_pending();
+                    cx.quit();
                 }
-                (SessionAction::Open, revision) => self.open_show(revision, cx),
-                (SessionAction::Quit, Some(revision)) => {
-                    if !self.dispatcher.admit_guarded_quit(revision, || cx.quit()) {
-                        let effect = self.session_guard.borrow_mut().request(SessionAction::Quit);
-                        self.apply_guard_effect(effect, window, cx);
-                    }
-                }
-                (SessionAction::New, None) => self.new_show(),
-                (SessionAction::Quit, None) => cx.quit(),
-                (SessionAction::UpdateAndRestart, revision) => {
-                    self.continue_update_restart(revision, window, cx);
-                }
+                SessionAction::UpdateAndRestart => self.continue_update_restart(window, cx),
             },
             GuardEffect::Error(message) => {
                 window.push_notification(Notification::error(message), cx);
@@ -624,112 +580,84 @@ impl AppRoot {
         .detach();
     }
 
-    pub fn new_show(&self) {
+    fn new_show(&self) {
         self.pending_save_command_id.set(None);
-        self.dispatcher
+        let command_id = self
+            .dispatcher
             .dispatch_serial(|commands| async move { commands.new_show_file().await.map(|_| ()) });
+        self.session_guard
+            .borrow_mut()
+            .continuation_started(command_id);
     }
 
-    fn guarded_new_show(&self, expected_persisted_revision: u64) {
-        self.pending_save_command_id.set(None);
-        self.dispatcher.dispatch_serial(move |commands| async move {
-            commands
-                .guarded_new_show_file(expected_persisted_revision)
-                .await
-                .map(|_| ())
-        });
-    }
-
-    fn new_show_from_template(
-        &self,
-        expected_persisted_revision: Option<u64>,
-        cx: &mut Context<Self>,
-    ) {
+    fn prompt_for_show_file(&self, from_template: bool, cx: &mut Context<Self>) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Open Template".into()),
+            prompt: Some(
+                if from_template {
+                    "Open Template"
+                } else {
+                    "Open Session"
+                }
+                .into(),
+            ),
         });
-        let dispatcher = self.dispatcher.clone();
-        cx.spawn(async move |this, cx| match response.await {
-            Ok(Ok(Some(paths))) => {
-                let path = paths.into_iter().next();
-                if path.as_ref().is_some_and(|path| !is_show_file_path(path)) {
-                    Self::push_async_error(
-                        &this,
-                        "Select an Advanced Show Control template (.ascs).".to_string(),
-                        cx,
-                    );
+        cx.spawn(async move |this, cx| {
+            let kind = if from_template { "template" } else { "session" };
+            let result = match response.await {
+                Ok(Ok(paths)) => Ok(paths.and_then(|paths| paths.into_iter().next())),
+                Ok(Err(error)) => Err(format!("Could not open the {kind} picker: {error}")),
+                Err(error) => Err(format!(
+                    "The {kind} picker did not return a result: {error}"
+                )),
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.session_guard.borrow().is_continuing() {
                     return;
                 }
-                dispatcher.dispatch_serial(move |commands| async move {
-                    match expected_persisted_revision {
-                        Some(revision) => commands
-                            .guarded_new_show_file_from_template(path, revision)
-                            .await
-                            .map(|_| ()),
-                        None => commands.new_show_file_from_template(path).await.map(|_| ()),
+                let result = if window.has_active_prompt() || this.modal_open(window, cx) {
+                    Err(
+                        "The session action was cancelled because another dialog opened."
+                            .to_string(),
+                    )
+                } else {
+                    result
+                };
+                match result {
+                    Ok(Some(path)) if is_show_file_path(&path) => {
+                        let command_id =
+                            this.dispatcher.dispatch_serial(move |commands| async move {
+                                if from_template {
+                                    commands
+                                        .new_show_file_from_template(Some(path))
+                                        .await
+                                        .map(|_| ())
+                                } else {
+                                    commands.open_show_file(Some(path)).await.map(|_| ())
+                                }
+                            });
+                        this.session_guard
+                            .borrow_mut()
+                            .continuation_started(command_id);
                     }
-                });
-            }
-            Ok(Ok(None)) => {}
-            Ok(Err(error)) => Self::push_async_error(
-                &this,
-                format!("Could not open the template picker: {error}"),
-                cx,
-            ),
-            Err(error) => Self::push_async_error(
-                &this,
-                format!("The template picker did not return a result: {error}"),
-                cx,
-            ),
-        })
-        .detach();
-    }
-
-    fn open_show(&self, expected_persisted_revision: Option<u64>, cx: &mut Context<Self>) {
-        self.pending_save_command_id.set(None);
-        let response = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Open Session".into()),
-        });
-        let dispatcher = self.dispatcher.clone();
-        cx.spawn(async move |this, cx| match response.await {
-            Ok(Ok(Some(paths))) => {
-                let path = paths.into_iter().next();
-                if path.as_ref().is_some_and(|path| !is_show_file_path(path)) {
-                    Self::push_async_error(
-                        &this,
-                        "Select an Advanced Show Control session (.ascs).".to_string(),
-                        cx,
-                    );
-                    return;
+                    result => {
+                        this.session_guard.borrow_mut().cancel_pending();
+                        let error = match result {
+                            Ok(Some(_)) => {
+                                Some(format!("Select an Advanced Show Control {kind} (.ascs)."))
+                            }
+                            Ok(None) => None,
+                            Err(error) => Some(error),
+                        };
+                        if let Some(error) = error {
+                            window.push_notification(Notification::error(error), cx);
+                        }
+                    }
                 }
-                dispatcher.dispatch_serial(move |commands| async move {
-                    match expected_persisted_revision {
-                        Some(revision) => commands
-                            .guarded_open_show_file(path, revision)
-                            .await
-                            .map(|_| ()),
-                        None => commands.open_show_file(path).await.map(|_| ()),
-                    }
-                });
-            }
-            Ok(Ok(None)) => {}
-            Ok(Err(error)) => Self::push_async_error(
-                &this,
-                format!("Could not open the session picker: {error}"),
-                cx,
-            ),
-            Err(error) => Self::push_async_error(
-                &this,
-                format!("The session picker did not return a result: {error}"),
-                cx,
-            ),
+            });
         })
         .detach();
     }
@@ -807,24 +735,18 @@ impl AppRoot {
 
     /// @cc [owner:mixxorz,label:product;persistence] update-restart-uses-session-guard
     /// An update MUST be armed only by an explicit UpdateAndRestart continuation after the existing
-    /// dirty-session guard admits it. A clean continuation MUST arm under exact revision admission;
-    /// cancellation and stale preflight MUST NOT hand an update to the external installer. The
-    /// disconnect wait MUST carry the validated submission epoch as well as owner revision, and
-    /// either mismatch MUST restart preflight before arming.
-    fn continue_update_restart(
-        &mut self,
-        revision: Option<u64>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// dirty-session guard admits it. The guard MUST remain busy through the asynchronous disconnect
+    /// and installer handoff; cancellation, disconnect failure, or modal interference MUST NOT arm
+    /// the update and MUST release the pending action.
+    fn continue_update_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(plan) = self.pending_update_install.borrow_mut().take() {
-            self.pending_update_preparation
-                .set(Some(self.dispatcher.disconnect_for_update(
-                    plan,
-                    revision,
-                    revision.map(|_| self.dispatcher.persisted_edit_epoch()),
-                )));
+            let command_id = self.dispatcher.disconnect_for_update(plan);
+            self.pending_update_preparation.set(Some(command_id));
+            self.session_guard
+                .borrow_mut()
+                .continuation_started(command_id);
         } else {
+            self.session_guard.borrow_mut().cancel_pending();
             window.push_notification(
                 Notification::error("The downloaded update is no longer available."),
                 cx,
@@ -834,49 +756,15 @@ impl AppRoot {
 
     fn arm_update_and_quit(
         &mut self,
-        revision: Option<u64>,
-        expected_edit_epoch: Option<u64>,
+        plan: UpdateInstallPlan,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_update_install.borrow().is_none() {
-            window.push_notification(
-                Notification::error("The downloaded update is no longer available."),
-                cx,
-            );
-            return;
-        }
-        if update_edit_epoch_is_stale(expected_edit_epoch, self.dispatcher.persisted_edit_epoch()) {
-            let effect = self
-                .session_guard
-                .borrow_mut()
-                .request(SessionAction::UpdateAndRestart);
-            self.apply_guard_effect(effect, window, cx);
-            return;
-        }
-        let dispatcher = self.dispatcher.clone();
-        let handoff_error = RefCell::new(None);
-        let arm_and_quit = || {
-            if let Some(plan) = self.pending_update_install.borrow_mut().take() {
-                match dispatcher.arm_update_install(plan) {
-                    Ok(()) => cx.quit(),
-                    Err(error) => *handoff_error.borrow_mut() = Some(error),
-                }
-            }
-        };
-        if let Some(revision) = revision {
-            if !self.dispatcher.admit_guarded_quit(revision, arm_and_quit) {
-                let effect = self
-                    .session_guard
-                    .borrow_mut()
-                    .request(SessionAction::UpdateAndRestart);
-                self.apply_guard_effect(effect, window, cx);
-            }
-        } else {
-            arm_and_quit();
-        }
-        if let Some(error) = handoff_error.into_inner() {
-            window.push_notification(Notification::error(error), cx);
+        let result = self.dispatcher.arm_update_install(plan);
+        self.session_guard.borrow_mut().cancel_pending();
+        match result {
+            Ok(()) => cx.quit(),
+            Err(error) => window.push_notification(Notification::error(error), cx),
         }
     }
 
@@ -1130,22 +1018,6 @@ impl AppRoot {
     }
 }
 
-fn update_edit_epoch_is_stale(expected: Option<u64>, current: u64) -> bool {
-    expected.is_some_and(|epoch| epoch != current)
-}
-
-fn session_query_is_stale(
-    query_edit_epoch: u64,
-    current_edit_epoch: u64,
-    result: &Result<crate::show::ShowSessionState, String>,
-    current_persisted_revision: u64,
-) -> bool {
-    query_edit_epoch != current_edit_epoch
-        || result
-            .as_ref()
-            .is_ok_and(|state| state.persisted_session_revision != current_persisted_revision)
-}
-
 const DIRTY_SESSION_PROMPT_CHOICES: [&str; 3] = ["Save", "Don’t Save", "Cancel"];
 
 fn dirty_session_prompt_title(show_file_name: &str) -> String {
@@ -1157,10 +1029,6 @@ fn dirty_session_prompt_title(show_file_name: &str) -> String {
 
 fn modal_surface_active(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
     native_prompt || native_dialog || custom_modal
-}
-
-fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState) -> bool {
-    session_revision == snapshot.session_revision
 }
 
 fn about_detail() -> &'static str {
@@ -1247,9 +1115,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DIRTY_SESSION_PROMPT_CHOICES, cue_completion_matches_session, dirty_session_prompt_title,
-        ensure_show_file_extension, is_show_file_path, modal_surface_active,
-        session_query_is_stale, suggested_save_file_name, update_edit_epoch_is_stale,
+        DIRTY_SESSION_PROMPT_CHOICES, dirty_session_prompt_title, ensure_show_file_extension,
+        is_show_file_path, modal_surface_active, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
 
@@ -1270,36 +1137,11 @@ mod tests {
     }
 
     #[test]
-    fn owner_revision_change_makes_successful_query_stale() {
-        let result = Ok(crate::show::ShowSessionState {
-            show_file_path: None,
-            show_file_name: "Untitled Session".to_string(),
-            show_file_dirty: false,
-            persisted_session_revision: 4,
-        });
-
-        assert!(!session_query_is_stale(2, 2, &result, 4));
-        assert!(session_query_is_stale(2, 2, &result, 5));
-        assert!(session_query_is_stale(2, 3, &result, 4));
-    }
-
-    #[test]
     fn close_request_is_blocked_while_any_modal_surface_is_active() {
         assert!(!modal_surface_active(false, false, false));
         assert!(modal_surface_active(true, false, false));
         assert!(modal_surface_active(false, true, false));
         assert!(modal_surface_active(false, false, true));
-    }
-
-    #[test]
-    fn stale_cue_completion_cannot_invalidate_a_new_session() {
-        let snapshot = AppViewState {
-            session_revision: 2,
-            ..Default::default()
-        };
-
-        assert!(!cue_completion_matches_session(1, &snapshot));
-        assert!(cue_completion_matches_session(2, &snapshot));
     }
 
     #[test]
@@ -1337,12 +1179,5 @@ mod tests {
             suggested_save_file_name(&stale_snapshot, true),
             "Source Template.ascs"
         );
-    }
-
-    #[test]
-    fn queued_edits_after_update_preflight_require_another_query() {
-        assert!(!update_edit_epoch_is_stale(Some(7), 7));
-        assert!(update_edit_epoch_is_stale(Some(7), 8));
-        assert!(!update_edit_epoch_is_stale(None, 8)); // Explicit Discard is unconditional.
     }
 }

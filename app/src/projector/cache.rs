@@ -80,7 +80,6 @@ impl ProjectionCache {
             scene_configs: state.scenes.scene_configs.clone(),
             scene_settings_clipboard_available: state.scenes.scene_settings_clipboard_available,
             cue_lists: state.cue_lists.document.cue_lists.clone(),
-            session_revision: state.session_revision,
             active_cue_list_id: state.cue_lists.document.active_cue_list_id,
             current_cue_entry_id: state.cue_lists.current_cue_entry_id,
             cued_cue_entry_id: state.cue_lists.document.cued_cue_entry_id,

@@ -18,7 +18,6 @@ pub struct AppStateSnapshot {
     pub show: ShowProjectionState,
     pub scenes: ScenesProjectionState,
     pub cue_lists: CueListsProjectionState,
-    pub session_revision: u64,
     pub settings: AppSettings,
     pub updates: crate::updates::UpdateState,
 }
@@ -30,7 +29,6 @@ impl Default for AppStateSnapshot {
             show: ShowState::default().projection_state(),
             scenes: ScenesProjectionState::default(),
             cue_lists: CueListsProjectionState::default(),
-            session_revision: 0,
             settings: AppSettings::default(),
             updates: crate::updates::UpdateState::default(),
         }
@@ -84,8 +82,7 @@ impl AppStateSnapshot {
     /**
      * @cc [owner:mixxorz,label:consistency] session-replacement-atomic-projection
      * `SessionReplaced` MUST apply its Scenes and Cue Lists projections in the same watch-state
-     * mutation and increment `session_revision`, preventing a mixed retained session snapshot and
-     * allowing presentation-only work from the prior session to be discarded.
+     * mutation, preventing a mixed retained session snapshot.
      */
     /**
      * @cc [owner:mixxorz,label:safety;updates] retained-update-channel-revision
@@ -170,10 +167,9 @@ impl AppStateSnapshot {
             AppEvent::SessionReplaced {
                 scenes, cue_lists, ..
             } => {
-                replace(&mut self.scenes, scenes);
-                replace(&mut self.cue_lists, cue_lists);
-                self.session_revision = self.session_revision.saturating_add(1);
-                true
+                let scenes_changed = replace(&mut self.scenes, scenes);
+                let cues_changed = replace(&mut self.cue_lists, cue_lists);
+                scenes_changed || cues_changed
             }
             _ => false,
         }

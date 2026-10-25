@@ -116,6 +116,7 @@ impl AppShell {
         };
         if resolve_next_scene(&self.snapshot, pending_go_count).is_none()
             || !self.go_submissions.borrow().can_submit()
+            || self.dispatcher.session_transition_pending()
             || self.modal_open(cx)
             || self.session_menu_open
             || self.shortcut_capture_active(cx)
@@ -124,13 +125,10 @@ impl AppShell {
         }
 
         self.action_context.focus(window, cx);
-        let command_id = self
-            .dispatcher
-            .dispatch_cued_cue_recall(self.snapshot.session_revision);
+        let command_id = self.dispatcher.dispatch_cued_cue_recall();
         self.go_submissions.borrow_mut().start(
             command_id,
             self.snapshot.state_version,
-            self.snapshot.session_revision,
             next_entry_id,
         );
         self.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
@@ -343,7 +341,8 @@ impl Render for AppShell {
 }
 
 /// @cc [owner:mixxorz,label:safety;product] go-submission-guard
-/// GO MUST be disabled without a resolvable cued scene or when eight GO commands are unsettled, but
+/// GO MUST be disabled during a pending session action, without a resolvable cued scene, or when
+/// eight GO commands are unsettled, but
 /// MUST remain available below that capacity while earlier GO recalls are unsettled. Pointer
 /// multi-click sequences MUST dispatch only their first click so an accidental double-click cannot
 /// enqueue a duplicate recall.
@@ -368,6 +367,7 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
     };
     let can_go = cued.is_some()
         && shell.go_submissions.borrow().can_submit()
+        && !shell.dispatcher.session_transition_pending()
         && !shell.modal_open(cx)
         && !shell.session_menu_open
         && !shell.shortcut_capture_active(cx);
@@ -556,7 +556,7 @@ mod tests {
 
         for command_id in 1..=GO_SUBMISSION_CAPACITY as u64 {
             assert!(guard.can_submit());
-            guard.start(command_id, 0, 0, Uuid::from_u128(command_id as u128));
+            guard.start(command_id, 0, Uuid::from_u128(command_id as u128));
         }
         assert!(!guard.can_submit());
 
@@ -565,7 +565,7 @@ mod tests {
         assert!(!guard.can_submit());
         assert!(guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
         assert!(guard.can_submit());
-        guard.start(9, 0, 0, Uuid::from_u128(9));
+        guard.start(9, 0, Uuid::from_u128(9));
         assert!(!guard.finish(1, Some(Uuid::from_u128(1)), &snapshot));
         assert!(!guard.can_submit());
         let advanced = AppViewState {

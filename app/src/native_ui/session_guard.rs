@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SessionAction {
@@ -21,7 +25,6 @@ pub(super) struct SessionStatus {
     pub path: Option<PathBuf>,
     pub name: String,
     pub dirty: bool,
-    pub persisted_session_revision: u64,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -32,10 +35,7 @@ pub(super) enum GuardEffect {
     ChooseSaveDestination,
     SaveCurrent,
     SaveTo(PathBuf),
-    Continue {
-        action: SessionAction,
-        expected_persisted_revision: Option<u64>,
-    },
+    Continue(SessionAction),
     Error(String),
 }
 
@@ -57,6 +57,9 @@ enum GuardPhase {
     Saving {
         command_id: Option<u64>,
     },
+    Continuing {
+        command_id: Option<u64>,
+    },
 }
 
 struct PendingAction {
@@ -67,23 +70,29 @@ struct PendingAction {
 #[derive(Default)]
 pub(super) struct SessionGuard {
     pending: Option<PendingAction>,
+    busy: Arc<AtomicBool>,
 }
 
 impl SessionGuard {
+    pub(super) fn new(busy: Arc<AtomicBool>) -> Self {
+        Self {
+            pending: None,
+            busy,
+        }
+    }
+
     /// @cc [owner:mixxorz,label:product;persistence] dirty-session-destructive-action-gate
     /// Every destructive session action MUST first obtain an authoritative Show session-state
     /// result. It may continue only when that preflight is clean, the user explicitly chose
-    /// Discard, or a successful save is followed by an authoritative clean recheck. A clean
-    /// preflight or post-save continuation MUST carry the exact owner-side revision it validated;
-    /// explicit Discard MUST carry no revision and remains unconditional. A matching query whose
-    /// persisted-edit submission epoch or owner-side persisted revision is stale MUST retain its
-    /// preflight or post-save phase and request another query. Uncorrelated results,
-    /// cancellation, query/save failure, and
-    /// a dirty post-save recheck MUST NOT continue the action.
+    /// Discard, or a successful save is followed by an authoritative clean recheck. The existing
+    /// pending state MUST block new UI document edits and GO until the picker and continued file
+    /// operation finish, or the action is cancelled or fails. Uncorrelated results MUST NOT advance
+    /// or clear the pending action; query/save failure and a dirty post-save recheck MUST NOT continue.
     pub(super) fn request(&mut self, action: SessionAction) -> GuardEffect {
         if self.pending.is_some() {
             return GuardEffect::None;
         }
+        self.busy.store(true, Ordering::Relaxed);
         self.pending = Some(PendingAction {
             action,
             phase: GuardPhase::Querying {
@@ -97,8 +106,8 @@ impl SessionGuard {
     /// @cc [owner:mixxorz,label:product;persistence] dirty-window-close-veto
     /// A platform close request MUST always be vetoed. The first request enters the same
     /// authoritative preflight as menu and keyboard actions; repeated requests remain vetoed while
-    /// preflight, prompting, saving, or post-save verification is pending. Closing occurs only by
-    /// the guarded Quit continuation.
+    /// preflight, prompting, saving, post-save verification, or continuation is pending. Closing
+    /// occurs only by the guarded Quit continuation.
     pub(super) fn request_close(&mut self) -> (bool, GuardEffect) {
         (false, self.request(SessionAction::Quit))
     }
@@ -114,22 +123,8 @@ impl SessionGuard {
         }
     }
 
-    pub(super) fn state_query_stale(&mut self, query_id: u64) -> GuardEffect {
-        let Some(PendingAction {
-            phase: GuardPhase::Querying { query_id: slot, .. },
-            ..
-        }) = self.pending.as_mut()
-        else {
-            return GuardEffect::None;
-        };
-        if *slot != Some(query_id) {
-            return GuardEffect::None;
-        }
-        *slot = None;
-        GuardEffect::QueryState
-    }
-
     pub(super) fn cancel_pending(&mut self) -> bool {
+        self.busy.store(false, Ordering::Relaxed);
         self.pending.take().is_some()
     }
 
@@ -161,18 +156,16 @@ impl SessionGuard {
         let status = match result {
             Ok(status) => status,
             Err(error) => {
-                self.pending = None;
+                self.cancel_pending();
                 return GuardEffect::Error(format!(
                     "Could not check the current session before continuing: {error}"
                 ));
             }
         };
         if !status.dirty {
-            self.pending = None;
-            return GuardEffect::Continue {
-                action,
-                expected_persisted_revision: Some(status.persisted_session_revision),
-            };
+            self.pending.as_mut().expect("pending action exists").phase =
+                GuardPhase::Continuing { command_id: None };
+            return GuardEffect::Continue(action);
         }
         match kind {
             QueryKind::Preflight => {
@@ -183,7 +176,7 @@ impl SessionGuard {
                 GuardEffect::Prompt(status.name)
             }
             QueryKind::PostSave => {
-                self.pending = None;
+                self.cancel_pending();
                 GuardEffect::Error(
                     "The session changed while it was being saved. The requested action was cancelled."
                         .to_string(),
@@ -214,14 +207,12 @@ impl SessionGuard {
                 GuardEffect::ChooseSaveDestination
             }
             GuardChoice::Discard => {
-                self.pending = None;
-                GuardEffect::Continue {
-                    action,
-                    expected_persisted_revision: None,
-                }
+                self.pending.as_mut().expect("pending action exists").phase =
+                    GuardPhase::Continuing { command_id: None };
+                GuardEffect::Continue(action)
             }
             GuardChoice::Cancel => {
-                self.pending = None;
+                self.cancel_pending();
                 GuardEffect::None
             }
         }
@@ -241,7 +232,7 @@ impl SessionGuard {
                 GuardEffect::SaveTo(path)
             }
             None => {
-                self.pending = None;
+                self.cancel_pending();
                 GuardEffect::None
             }
         }
@@ -258,7 +249,34 @@ impl SessionGuard {
         }
     }
 
+    pub(super) fn continuation_started(&mut self, command_id: u64) {
+        if let Some(PendingAction {
+            phase: GuardPhase::Continuing { command_id: slot },
+            ..
+        }) = self.pending.as_mut()
+            && slot.is_none()
+        {
+            *slot = Some(command_id);
+        }
+    }
+
+    pub(super) fn is_continuing(&self) -> bool {
+        matches!(
+            self.pending.as_ref().map(|pending| &pending.phase),
+            Some(GuardPhase::Continuing { .. })
+        )
+    }
+
     pub(super) fn command_finished(&mut self, command_id: u64, succeeded: bool) -> GuardEffect {
+        let continuation_matches = matches!(
+            self.pending.as_ref().map(|pending| &pending.phase),
+            Some(GuardPhase::Continuing { command_id: Some(expected_id) })
+                if *expected_id == command_id
+        );
+        if continuation_matches {
+            self.cancel_pending();
+            return GuardEffect::None;
+        }
         let failed_query_matches = matches!(
             self.pending.as_ref().map(|pending| &pending.phase),
             Some(GuardPhase::Querying {
@@ -267,7 +285,7 @@ impl SessionGuard {
             }) if *expected_id == command_id && !succeeded
         );
         if failed_query_matches {
-            self.pending = None;
+            self.cancel_pending();
             return GuardEffect::None;
         }
         let matches = matches!(
@@ -280,7 +298,7 @@ impl SessionGuard {
             return GuardEffect::None;
         }
         if !succeeded {
-            self.pending = None;
+            self.cancel_pending();
             return GuardEffect::None;
         }
         self.pending.as_mut().expect("pending action exists").phase = GuardPhase::Querying {
@@ -307,7 +325,6 @@ mod tests {
                 "Untitled Session"
             }
             .to_string(),
-            persisted_session_revision: 9,
         }
     }
 
@@ -330,10 +347,7 @@ mod tests {
         guard.query_started(2);
         assert_eq!(
             guard.state_query_finished(2, Ok(status(false, true))),
-            GuardEffect::Continue {
-                action: SessionAction::UpdateAndRestart,
-                expected_persisted_revision: Some(9),
-            }
+            GuardEffect::Continue(SessionAction::UpdateAndRestart)
         );
     }
 
@@ -350,12 +364,25 @@ mod tests {
         assert!(guard.is_pending());
         assert_eq!(
             guard.state_query_finished(10, Ok(status(false, false))),
-            GuardEffect::Continue {
-                action: SessionAction::New,
-                expected_persisted_revision: Some(9),
-            }
+            GuardEffect::Continue(SessionAction::New)
         );
+        assert!(guard.is_pending());
+        assert!(guard.busy.load(std::sync::atomic::Ordering::Relaxed));
+        guard.continuation_started(11);
+        assert_eq!(guard.request_close(), (false, GuardEffect::None));
+        guard.command_finished(10, true);
+        assert!(guard.is_pending());
+        guard.command_finished(11, true);
         assert!(!guard.is_pending());
+        assert!(!guard.busy.load(std::sync::atomic::Ordering::Relaxed));
+
+        guard.request(SessionAction::Open);
+        guard.query_started(12);
+        guard.state_query_finished(12, Ok(status(false, true)));
+        guard.continuation_started(13);
+        guard.command_finished(13, false);
+        assert!(!guard.is_pending());
+        assert!(!guard.busy.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]
@@ -377,10 +404,7 @@ mod tests {
         assert_eq!(guard.request_close(), (false, GuardEffect::None));
         assert_eq!(
             guard.state_query_finished(3, Ok(status(false, true))),
-            GuardEffect::Continue {
-                action: SessionAction::Quit,
-                expected_persisted_revision: Some(9),
-            }
+            GuardEffect::Continue(SessionAction::Quit)
         );
     }
 
@@ -467,46 +491,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_preflight_query_retries_without_losing_the_action() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::Open);
-        guard.query_started(10);
-
-        assert_eq!(guard.state_query_stale(10), GuardEffect::QueryState);
-        assert!(guard.is_pending());
-        guard.query_started(11);
-        assert_eq!(
-            guard.state_query_finished(11, Ok(status(false, true))),
-            GuardEffect::Continue {
-                action: SessionAction::Open,
-                expected_persisted_revision: Some(9),
-            }
-        );
-    }
-
-    #[test]
-    fn stale_post_save_query_retries_without_losing_the_phase() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::Quit);
-        guard.query_started(1);
-        guard.state_query_finished(1, Ok(status(true, true)));
-        guard.choose(GuardChoice::Save);
-        guard.save_started(2);
-        assert_eq!(guard.command_finished(2, true), GuardEffect::QueryState);
-        guard.query_started(3);
-
-        assert_eq!(guard.state_query_stale(3), GuardEffect::QueryState);
-        guard.query_started(4);
-        assert_eq!(
-            guard.state_query_finished(4, Ok(status(false, true))),
-            GuardEffect::Continue {
-                action: SessionAction::Quit,
-                expected_persisted_revision: Some(9),
-            }
-        );
-    }
-
-    #[test]
     fn modal_cancellation_clears_pending_action() {
         let mut guard = SessionGuard::default();
         guard.request(SessionAction::New);
@@ -538,12 +522,13 @@ mod tests {
         guard.state_query_finished(1, Ok(status(true, true)));
         assert_eq!(
             guard.choose(GuardChoice::Discard),
-            GuardEffect::Continue {
-                action: SessionAction::Open,
-                expected_persisted_revision: None,
-            }
+            GuardEffect::Continue(SessionAction::Open)
         );
 
+        assert!(guard.is_continuing());
+        assert!(guard.busy.load(std::sync::atomic::Ordering::Relaxed));
+        guard.cancel_pending(); // The continued picker was cancelled.
+        assert!(!guard.busy.load(std::sync::atomic::Ordering::Relaxed));
         guard.request(SessionAction::Quit);
         guard.query_started(2);
         guard.state_query_finished(2, Ok(status(true, true)));
