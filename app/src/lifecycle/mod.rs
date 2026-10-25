@@ -166,8 +166,6 @@ pub struct AppLifecycle {
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
-    #[cfg(test)]
-    lockout: ShowLockoutReader,
     cue_lists: CueListsHandle,
     scenes: ScenesHandle,
     scenes_peers: ScenesPeers,
@@ -215,8 +213,6 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
-            #[cfg(test)]
-            lockout,
             cue_lists,
             scenes,
             scenes_peers,
