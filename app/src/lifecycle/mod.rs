@@ -114,7 +114,6 @@ struct LifecycleInner {
 #[derive(Clone)]
 pub struct RuntimeSnapshotSource {
     inner: Arc<Mutex<LifecycleInner>>,
-    generation: RuntimeGeneration,
 }
 
 impl RuntimeSnapshotSource {
@@ -130,28 +129,6 @@ impl RuntimeSnapshotSource {
             .as_ref()
             .filter(|runtime| runtime.generation == generation)?;
         Some((generation, runtime.lv1.clone()))
-    }
-
-    pub async fn current_generation(&self) -> u64 {
-        self.generation.current().await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_lv1_for_test(lv1: Lv1ActorHandle) -> Self {
-        let generation = RuntimeGeneration::default();
-        let (fade, _fade_rx) = tokio::sync::mpsc::channel(1);
-        Self {
-            inner: Arc::new(Mutex::new(LifecycleInner {
-                generation: generation.clone(),
-                runtime: Some(InstalledRuntime {
-                    generation: 0,
-                    lv1,
-                    fade,
-                }),
-                projection_sink: None,
-            })),
-            generation,
-        }
     }
 }
 
@@ -705,7 +682,6 @@ impl AppLifecycle {
     pub fn runtime_snapshot_source(&self) -> RuntimeSnapshotSource {
         RuntimeSnapshotSource {
             inner: self.inner.clone(),
-            generation: self.show_peers.runtime_generation(),
         }
     }
 
@@ -916,7 +892,7 @@ impl AppLifecycle {
 
     /// @cc [owner:mixxorz,label:architecture] projector-starts-once
     /// The first presentation-ready call MUST atomically mark readiness and start one projector from the
-    /// current generation and retained/event/log sources; subsequent calls MUST succeed without
+    /// retained display state and log sources; subsequent calls MUST succeed without
     /// replacing or starting another projector.
     pub async fn frontend_ready(
         &self,
@@ -926,14 +902,10 @@ impl AppLifecycle {
         if let Some(sink) = &inner.projection_sink {
             return sink.subscribe();
         }
-        let generation = inner.generation.current().await;
         let (sink, subscription) = crate::projector::projection_channel();
         crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             sink: sink.clone(),
-            generation,
             state: self.event_bus.state(),
-            runtime_source: self.runtime_snapshot_source(),
-            events: self.event_bus.subscribe(),
             logs,
         });
         inner.projection_sink = Some(sink);

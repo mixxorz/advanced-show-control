@@ -78,7 +78,8 @@ impl AppEventBus {
      */
     /**
      * @cc [owner:mixxorz,label:architecture] retain-before-broadcast
-     * Publishing MUST apply any retained app-state projection before broadcasting the fact, so a
+     * Publishing MUST apply retained app-state and current-generation display values before broadcasting
+     * the fact, so a
      * receiver reacting to that fact can read a snapshot at least as new as the fact.
      */
     /**
