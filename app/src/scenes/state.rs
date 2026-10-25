@@ -9,25 +9,10 @@ use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, Scene
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SCENE_LIST_EDIT_SUPPRESSION_WINDOW: Duration = Duration::from_millis(500);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RecallSceneIdentity {
-    index: i32,
-    name: String,
-}
-
-impl From<&SceneState> for RecallSceneIdentity {
-    fn from(scene: &SceneState) -> Self {
-        Self {
-            index: scene.index,
-            name: scene.name.clone(),
-        }
-    }
-}
-
 /// A scene observation: which scene and when it was seen.
 #[derive(Debug, Clone)]
 struct ObservedScene {
-    scene: RecallSceneIdentity,
+    scene: SceneState,
     at: Instant,
 }
 
@@ -371,7 +356,7 @@ impl ScenesState {
         same_scene_repeat_delay: Duration,
     ) -> bool {
         let observed = ObservedScene {
-            scene: RecallSceneIdentity::from(current_scene),
+            scene: current_scene.clone(),
             at: now,
         };
 
@@ -683,6 +668,18 @@ mod tests {
 
         assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
         assert!(state.accepts_at(&scene(2, "Verse"), start + RECALL_ARMING_DELAY, delay,));
+    }
+
+    #[test]
+    fn recall_repeat_suppression_requires_both_scene_index_and_name() {
+        let mut state = ScenesState::default();
+        let start = Instant::now();
+        let repeat_delay = Duration::from_secs(10);
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, repeat_delay));
+        let armed = start + RECALL_ARMING_DELAY;
+        assert!(state.accepts_at(&scene(2, "Intro"), armed, repeat_delay));
+        assert!(state.accepts_at(&scene(2, "Verse"), armed, repeat_delay));
+        assert!(!state.accepts_at(&scene(2, "Verse"), armed, repeat_delay));
     }
 
     #[test]

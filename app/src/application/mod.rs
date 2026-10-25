@@ -111,7 +111,7 @@ impl ApplicationCommandContext {
             .map_err(|_| "Updates are unavailable.".to_string())
     }
 
-    pub async fn frontend_ready(&self) -> Result<ProjectionSubscription, String> {
+    pub async fn frontend_ready(&self) -> ProjectionSubscription {
         self.lifecycle
             .frontend_ready(self.ui_logs.subscribe())
             .await

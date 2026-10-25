@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use uuid::Uuid;
 
@@ -14,7 +14,6 @@ pub(super) const GO_SUBMISSION_CAPACITY: usize = 8;
 /// two facts MAY arrive in either order and MUST be reconciled without double-advancing.
 #[derive(Default)]
 pub(super) struct GoSubmissionGuard {
-    command_ids: HashSet<u64>,
     presentation_queue: VecDeque<GoPresentationEntry>,
 }
 
@@ -29,7 +28,11 @@ struct GoPresentationEntry {
 
 impl GoSubmissionGuard {
     pub fn can_submit(&self) -> bool {
-        self.command_ids.len() < GO_SUBMISSION_CAPACITY
+        self.presentation_queue
+            .iter()
+            .filter(|entry| !entry.command_succeeded)
+            .count()
+            < GO_SUBMISSION_CAPACITY
     }
 
     pub fn presentation_pending_count(&self) -> usize {
@@ -47,8 +50,12 @@ impl GoSubmissionGuard {
         intended_entry_id: Uuid,
     ) {
         debug_assert!(self.can_submit());
-        let inserted = self.command_ids.insert(command_id);
-        debug_assert!(inserted);
+        debug_assert!(
+            !self
+                .presentation_queue
+                .iter()
+                .any(|entry| { entry.command_id == command_id && !entry.command_succeeded })
+        );
         self.presentation_queue.push_back(GoPresentationEntry {
             command_id,
             started_state_version: state_version,
@@ -65,15 +72,12 @@ impl GoSubmissionGuard {
         recalled_entry_id: Option<Uuid>,
         snapshot: &AppViewState,
     ) -> bool {
-        if !self.command_ids.remove(&command_id) {
-            return false;
-        }
         let Some(index) = self
             .presentation_queue
             .iter()
-            .position(|entry| entry.command_id == command_id)
+            .position(|entry| entry.command_id == command_id && !entry.command_succeeded)
         else {
-            return true;
+            return false;
         };
         if let Some(recalled_entry_id) = recalled_entry_id {
             if self.presentation_queue[index].intended_entry_id != Some(recalled_entry_id) {
@@ -123,8 +127,7 @@ impl GoSubmissionGuard {
     }
 
     pub fn invalidate(&mut self) -> bool {
-        let changed = !self.command_ids.is_empty() || !self.presentation_queue.is_empty();
-        self.command_ids.clear();
+        let changed = !self.presentation_queue.is_empty();
         self.presentation_queue.clear();
         changed
     }
@@ -319,6 +322,41 @@ mod tests {
         assert!(projection_first.finish(1, Some(recalled_entry_id), &advanced_snapshot));
         assert!(projection_first.can_submit());
         assert_eq!(projection_first.presentation_pending_count(), 0);
+    }
+
+    #[test]
+    fn go_capacity_releases_only_once_for_matching_completions_not_projections() {
+        let mut guard = GoSubmissionGuard::default();
+        for command_id in 1..=GO_SUBMISSION_CAPACITY as u64 {
+            guard.start(command_id, 10, 0, Uuid::from_u128(command_id.into()));
+        }
+        assert!(!guard.can_submit());
+        let initial = snapshot(10, "Show");
+        assert!(!guard.finish(999, None, &initial));
+        assert!(!guard.can_submit());
+
+        assert!(guard.finish(1, Some(Uuid::from_u128(1)), &initial));
+        assert!(guard.can_submit());
+        guard.start(9, 10, 0, Uuid::from_u128(9));
+        assert!(!guard.can_submit());
+        assert!(!guard.finish(1, Some(Uuid::from_u128(1)), &initial));
+        assert!(
+            !guard.can_submit(),
+            "duplicate completion must not release a second slot"
+        );
+
+        let advanced = cue_snapshot(11, Uuid::from_u128(8), None);
+        assert!(guard.observe_snapshot(&advanced));
+        assert_eq!(guard.presentation_pending_count(), 1);
+        assert!(
+            !guard.can_submit(),
+            "projection must not release command capacity"
+        );
+        assert!(guard.finish(9, None, &advanced));
+        assert!(
+            guard.can_submit(),
+            "matching failure also releases its slot"
+        );
     }
 
     #[test]

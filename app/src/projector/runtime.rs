@@ -230,7 +230,6 @@ impl PendingProjectorRecovery {
 }
 
 struct ProjectorRecoveryResult {
-    generation: Option<u64>,
     snapshot: Option<(u64, crate::lv1::Lv1StateSnapshot)>,
     timed_out: bool,
 }
@@ -248,7 +247,7 @@ async fn recover_projector_after_lag(
 ) -> ProjectorRecoveryResult {
     match tokio::time::timeout(Duration::from_millis(500), async {
         let runtime_snapshot = runtime_source.connected_lv1().await;
-        let authoritative_snapshot = if let Some((generation, lv1)) = runtime_snapshot {
+        if let Some((generation, lv1)) = runtime_snapshot {
             let (reply, response) = tokio::sync::oneshot::channel();
             if lv1.send(Lv1Command::GetState { reply }).await.is_ok() {
                 response
@@ -261,24 +260,15 @@ async fn recover_projector_after_lag(
             }
         } else {
             None
-        };
-        let current_generation = runtime_source.current_generation().await;
-        (current_generation, authoritative_snapshot)
+        }
     })
     .await
     {
-        Ok((generation, snapshot)) => ProjectorRecoveryResult {
-            generation: Some(generation),
+        Ok(snapshot) => ProjectorRecoveryResult {
             snapshot,
             timed_out: false,
         },
         Err(_) => ProjectorRecoveryResult {
-            generation: tokio::time::timeout(
-                Duration::from_millis(50),
-                runtime_source.current_generation(),
-            )
-            .await
-            .ok(),
             snapshot: None,
             timed_out: true,
         },
@@ -291,8 +281,7 @@ fn apply_recovery_result(
     current_generation: u64,
 ) {
     cache.reset_for_generation(current_generation);
-    if result.generation == Some(current_generation)
-        && let Some((snapshot_generation, snapshot)) = result.snapshot
+    if let Some((snapshot_generation, snapshot)) = result.snapshot
         && snapshot_generation == current_generation
     {
         cache.apply_lv1_snapshot(snapshot_generation, snapshot);

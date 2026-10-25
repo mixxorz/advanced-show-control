@@ -32,7 +32,6 @@ impl CueLists {
         CueListsProjectionState {
             document: self.state.document(),
             current_cue_entry_id: self.current_entry_id,
-            last_recall_status: None,
         }
     }
 

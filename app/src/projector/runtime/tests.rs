@@ -97,7 +97,6 @@ fn cue_state() -> CueListsProjectionState {
             cued_cue_entry_id: None,
         },
         current_cue_entry_id: None,
-        last_recall_status: Some("recalling".into()),
     }
 }
 
@@ -208,7 +207,6 @@ async fn cue_state_changes_are_projected() {
     test.events.publish(AppEvent::CueLists(cue_state()));
     let snapshot = test.snapshot().await;
     assert_eq!(snapshot.cue_lists[0].name, "Main");
-    assert_eq!(snapshot.last_cue_recall_status.unwrap(), "recalling");
 }
 
 #[tokio::test]
@@ -322,7 +320,6 @@ fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
     let mut cache = ProjectionCache::new();
     cache.set_active_generation(1);
     let result = ProjectorRecoveryResult {
-        generation: Some(1),
         snapshot: Some((
             1,
             crate::lv1::Lv1StateSnapshot {
@@ -343,6 +340,24 @@ fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
         snapshot.connection,
         crate::projector::AppConnectionState::Disconnected
     );
+}
+
+#[test]
+fn recovery_result_applies_a_snapshot_from_the_current_generation() {
+    let mut cache = ProjectionCache::new();
+    let result = ProjectorRecoveryResult {
+        snapshot: Some((2, recovery_snapshot("Recovered"))),
+        timed_out: false,
+    };
+
+    apply_recovery_result(&mut cache, result, 2);
+
+    let snapshot = cache.build_snapshot(&Default::default());
+    assert_eq!(
+        snapshot.connection,
+        crate::projector::AppConnectionState::Connected
+    );
+    assert_eq!(snapshot.current_scene.unwrap().name, "Recovered");
 }
 
 fn recovery_snapshot(name: &str) -> crate::lv1::Lv1StateSnapshot {

@@ -1504,8 +1504,12 @@ async fn finish_pending_recall(
             PendingRecallContext::Admission(admission),
             PendingRecallCompletion::Snapshot(Ok(snapshot)),
         ) => {
-            if coordinator.finish_admission(admission, lockout, &recall_state.snapshot(), &snapshot)
-            {
+            if coordinator.finish_admission(
+                admission,
+                lockout,
+                recall_state.scene_configs(),
+                &snapshot,
+            ) {
                 *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
             }
         }
@@ -1525,7 +1529,7 @@ async fn finish_pending_recall(
                 dispatch,
                 active_generation,
                 lockout,
-                &recall_state.snapshot(),
+                recall_state.scene_configs(),
                 &snapshot,
             ) {
                 Ok(prepared) => {
@@ -3141,8 +3145,19 @@ mod tests {
 
     #[tokio::test]
     async fn recall_queue_first_recall_dispatches_and_second_reply_stays_pending() {
+        let mut requested = queue_scene(1, "Intro");
+        requested.duration_ms = 2_500;
+        requested.channel_configs.push(ChannelConfig {
+            group: 0,
+            channel: 3,
+            fader_db: Some(-6.0),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        });
         let mut fixture = RecallCoordinatorFixture::connected_with_scenes(vec![
-            queue_scene(1, "Intro"),
+            requested.clone(),
             queue_scene(2, "Verse"),
         ])
         .await;
@@ -3154,7 +3169,9 @@ mod tests {
         first_dispatch.reply(Ok(RecallSceneDispatch {
             scene_observation_sequence: 10,
         }));
-        assert_eq!(first.await.unwrap().unwrap().lv1_scene_index, 1);
+        let result = first.await.unwrap().unwrap();
+        assert_eq!(result.lv1_scene_index, 1);
+        assert_eq!(result.scene, requested);
 
         yield_to_actor().await;
         assert!(second.try_recv().is_err());

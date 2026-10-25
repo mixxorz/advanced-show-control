@@ -7,7 +7,6 @@ use std::future::Future;
 #[cfg(test)]
 use std::pin::Pin;
 use tokio::sync::{Mutex, oneshot};
-use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber;
 
 use crate::cue_lists::CueListsHandle;
@@ -108,10 +107,8 @@ struct RuntimeClearTransaction {
 
 struct LifecycleInner {
     generation: RuntimeGeneration,
-    connecting: bool,
     runtime: Option<InstalledRuntime>,
     projection_sink: Option<crate::projector::ProjectionSink>,
-    projector: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -146,14 +143,12 @@ impl RuntimeSnapshotSource {
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
                 generation: generation.clone(),
-                connecting: false,
                 runtime: Some(InstalledRuntime {
                     generation: 0,
                     lv1,
                     fade,
                 }),
                 projection_sink: None,
-                projector: None,
             })),
             generation,
         }
@@ -205,10 +200,8 @@ impl AppLifecycle {
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
                 generation: runtime_generation,
-                connecting: false,
                 runtime: None,
                 projection_sink: None,
-                projector: None,
             })),
             event_bus,
             show,
@@ -254,13 +247,11 @@ impl AppLifecycle {
 
     /// @cc [owner:mixxorz,label:safety;ordering] begin-connection-generation-first
     /// Beginning a connection MUST serialize with lifecycle transitions, advance the active
-    /// generation before marking the connection pending, and publish that new generation before
-    /// returning it.
+    /// generation, and publish that new generation before returning it.
     pub async fn begin_connecting(&self) -> u64 {
         let _transition = self.transition_lock.lock().await;
-        let mut inner = self.inner.lock().await;
+        let inner = self.inner.lock().await;
         let generation = inner.generation.advance().await;
-        inner.connecting = true;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
@@ -273,7 +264,7 @@ impl AppLifecycle {
 
     /// @cc [owner:mixxorz,label:safety] install-current-runtime-only
     /// Runtime installation MUST accept only an exact active-generation match. Acceptance MUST
-    /// install Show's LV1 peer and the complete runtime before clearing `connecting`; rejection MUST
+    /// install Show's LV1 peer and the complete runtime; rejection MUST
     /// return the candidate without changing installed runtime state or Show's peer.
     async fn install_runtime_transaction(
         &self,
@@ -287,7 +278,6 @@ impl AppLifecycle {
         self.show_peers
             .set_lv1(runtime.generation, runtime.lv1.clone());
         inner.runtime = Some(runtime);
-        inner.connecting = false;
         Ok(())
     }
 
@@ -333,7 +323,7 @@ impl AppLifecycle {
 
     /// @cc [owner:mixxorz,label:safety] clear-runtime-compare-and-advance
     /// Clearing MUST atomically require `expected_generation` to be active, advance the generation,
-    /// remove the installed runtime, clear connecting state, and clear Show/Scenes peers for only
+    /// remove the installed runtime, and clear Show/Scenes peers for only
     /// the expected generation. A stale request MUST perform none of these effects.
     async fn clear_runtime_if_current(
         &self,
@@ -346,7 +336,6 @@ impl AppLifecycle {
             .await?;
 
         inner.runtime = None;
-        inner.connecting = false;
         self.show_peers.clear_lv1(expected_generation);
         self.scenes_peers
             .clear_peers_for_generation(expected_generation);
@@ -932,25 +921,23 @@ impl AppLifecycle {
     pub async fn frontend_ready(
         &self,
         logs: tokio::sync::broadcast::Receiver<UiLogEvent>,
-    ) -> Result<crate::projector::ProjectionSubscription, String> {
+    ) -> crate::projector::ProjectionSubscription {
         let mut inner = self.inner.lock().await;
         if let Some(sink) = &inner.projection_sink {
-            return Ok(sink.subscribe());
+            return sink.subscribe();
         }
         let generation = inner.generation.current().await;
         let (sink, subscription) = crate::projector::projection_channel();
-        inner.projector = Some(crate::projector::spawn_projector(
-            crate::projector::ProjectorInputs {
-                sink: sink.clone(),
-                generation,
-                state: self.event_bus.state(),
-                runtime_source: self.runtime_snapshot_source(),
-                events: self.event_bus.subscribe(),
-                logs,
-            },
-        ));
+        crate::projector::spawn_projector(crate::projector::ProjectorInputs {
+            sink: sink.clone(),
+            generation,
+            state: self.event_bus.state(),
+            runtime_source: self.runtime_snapshot_source(),
+            events: self.event_bus.subscribe(),
+            logs,
+        });
         inner.projection_sink = Some(sink);
-        Ok(subscription)
+        subscription
     }
 }
 
@@ -1356,8 +1343,8 @@ mod tests {
         let (second_logs, second_log_rx) = tokio::sync::broadcast::channel(8);
         // Keep a separate observer so publishing to an ignored source still succeeds.
         let _second_log_observer = second_logs.subscribe();
-        let mut first = fixture.frontend_ready(first_log_rx).await.unwrap();
-        let mut second = fixture.frontend_ready(second_log_rx).await.unwrap();
+        let mut first = fixture.frontend_ready(first_log_rx).await;
+        let mut second = fixture.frontend_ready(second_log_rx).await;
         next_snapshot(&mut first).await;
         next_snapshot(&mut second).await;
 
@@ -1383,7 +1370,7 @@ mod tests {
         );
 
         let (_third_logs, third_log_rx) = tokio::sync::broadcast::channel(1);
-        let mut third = fixture.frontend_ready(third_log_rx).await.unwrap();
+        let mut third = fixture.frontend_ready(third_log_rx).await;
         assert_eq!(third.latest().unwrap(), first_snapshot);
         first_logs
             .send(UiLogEvent {

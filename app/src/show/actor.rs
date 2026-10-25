@@ -721,10 +721,7 @@ fn finish_prepared_load(
         lockout,
         selected_scene_internal_id,
         should_mark_dirty,
-        alignment_changed,
-        imported_scene_configs,
-        aligned_scene_configs,
-        lv1_scene_list,
+        alignment_diagnostic,
     } = prepared;
     match &load_kind {
         ShowFileLoadKind::Open(path) => {
@@ -742,16 +739,8 @@ fn finish_prepared_load(
         state.mark_dirty();
     }
     publish_state_changed(event_bus, state);
-    if alignment_changed {
-        tracing::debug!(
-            event = "session_scene_alignment",
-            "{}",
-            crate::scenes::scene_alignment_diagnostic(
-                &imported_scene_configs,
-                &aligned_scene_configs,
-                &lv1_scene_list
-            )
-        );
+    if let Some(diagnostic) = alignment_diagnostic {
+        tracing::debug!(event = "session_scene_alignment", "{diagnostic}");
     }
     match load_kind {
         ShowFileLoadKind::Open(_) => {
@@ -857,12 +846,10 @@ enum ShowFileLoadKind {
 struct PreparedLoadImport {
     saved_at: String,
     lockout: bool,
-    selected_scene_internal_id: Option<String>,
     generated_internal_scene_ids: bool,
-    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    scene_document: SceneDocument,
     imported_cue_list_snapshot: CueListDocument,
-    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
-    alignment_changed: bool,
+    alignment_diagnostic: Option<String>,
 }
 
 struct PreparedLoad {
@@ -871,10 +858,7 @@ struct PreparedLoad {
     lockout: bool,
     selected_scene_internal_id: Option<String>,
     should_mark_dirty: bool,
-    alignment_changed: bool,
-    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
-    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
-    lv1_scene_list: Vec<crate::lv1::SceneListEntry>,
+    alignment_diagnostic: Option<String>,
 }
 
 /// @cc [owner:mixxorz,label:performance;persistence] load-import-off-actor-runtime
@@ -887,22 +871,30 @@ fn load_show_file_for_lv1(
     let mut file = read_show_file(path)?;
     let imported = import_show_file(&mut file, lv1)?;
     let imported_scene_configs = imported.snapshot.scene_configs;
+    let selected_scene_internal_id = imported.snapshot.selected_scene_internal_id;
     let scene_list = lv1
         .scene_list
         .as_deref()
         .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?;
     let aligned_scene_configs =
         crate::scenes::align_scene_configs(imported_scene_configs.clone(), scene_list);
-    let alignment_changed = aligned_scene_configs != imported_scene_configs;
+    let alignment_diagnostic = (aligned_scene_configs != imported_scene_configs).then(|| {
+        crate::scenes::scene_alignment_diagnostic(
+            &imported_scene_configs,
+            &aligned_scene_configs,
+            scene_list,
+        )
+    });
     Ok(PreparedLoadImport {
         saved_at: file.saved_at,
         lockout: imported.lockout,
-        selected_scene_internal_id: imported.selected_scene_internal_id,
         generated_internal_scene_ids: imported.generated_internal_scene_ids,
-        imported_scene_configs,
+        scene_document: SceneDocument {
+            scene_configs: aligned_scene_configs,
+            selected_scene_internal_id,
+        },
         imported_cue_list_snapshot: imported.cue_list_snapshot,
-        aligned_scene_configs,
-        alignment_changed,
+        alignment_diagnostic,
     })
 }
 
@@ -917,29 +909,28 @@ async fn prepare_load_show_file(
     let PreparedLoadImport {
         saved_at,
         lockout,
-        selected_scene_internal_id,
         generated_internal_scene_ids,
-        imported_scene_configs,
+        mut scene_document,
         imported_cue_list_snapshot,
-        aligned_scene_configs,
-        alignment_changed,
+        alignment_diagnostic,
     } = imported;
-    let mut should_mark_dirty = generated_internal_scene_ids || alignment_changed;
-    let selected_scene_internal_id = selected_scene_internal_id
+    let mut should_mark_dirty = generated_internal_scene_ids || alignment_diagnostic.is_some();
+    let selected_scene_internal_id = scene_document
+        .selected_scene_internal_id
+        .take()
         .filter(|selected| {
-            aligned_scene_configs
+            scene_document
+                .scene_configs
                 .iter()
                 .any(|scene| scene.internal_scene_id.to_string() == *selected)
         })
         .or_else(|| {
-            aligned_scene_configs
+            scene_document
+                .scene_configs
                 .first()
                 .map(|scene| scene.internal_scene_id.to_string())
         });
-    let scene_document = SceneDocument {
-        scene_configs: aligned_scene_configs.clone(),
-        selected_scene_internal_id: selected_scene_internal_id.clone(),
-    };
+    scene_document.selected_scene_internal_id = selected_scene_internal_id.clone();
     validate_lv1_snapshot(peers, expected_generation, lv1).await?;
     let committed = replace_session_document(
         peers,
@@ -958,13 +949,7 @@ async fn prepare_load_show_file(
         lockout,
         selected_scene_internal_id,
         should_mark_dirty,
-        alignment_changed,
-        imported_scene_configs,
-        aligned_scene_configs,
-        lv1_scene_list: lv1
-            .scene_list
-            .clone()
-            .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?,
+        alignment_diagnostic,
     })
 }
 
@@ -1773,6 +1758,8 @@ mod tests {
 
     #[tokio::test]
     async fn connected_load_marks_dirty_when_alignment_changes_imported_configs() {
+        let captured = crate::test_support::TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::default();
         let (show, _peers, scenes, _cue_lists) = load_fixture(
             event_bus,
@@ -1792,9 +1779,15 @@ mod tests {
             .expect("load should succeed");
 
         assert!(current_show_state(&show).await.show_file_dirty);
+        let document = get_scene_document(&scenes).await;
+        assert_eq!(document.scene_configs[0].scene_index, Some(2));
+        let diagnostics = captured.matching("session_scene_alignment", tracing::Level::DEBUG);
+        assert_eq!(diagnostics.len(), 1);
         assert_eq!(
-            get_scene_document(&scenes).await.scene_configs[0].scene_index,
-            Some(2)
+            diagnostics[0].message.as_deref(),
+            Some(
+                r#"scene alignment preview: old=[1:"Intro"] new=[2:"Intro"] lv1=[2:"Intro"] duplicate_names=[] strategy=exact-unique-name-single-rename"#
+            )
         );
         std::fs::remove_file(path).unwrap();
     }

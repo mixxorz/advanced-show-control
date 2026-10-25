@@ -56,7 +56,6 @@ pub struct ImportedShowFile {
     pub snapshot: SceneDocument,
     pub cue_list_snapshot: CueListDocument,
     pub lockout: bool,
-    pub selected_scene_internal_id: Option<String>,
     pub generated_internal_scene_ids: bool,
 }
 
@@ -144,13 +143,12 @@ pub fn import_show_file(
         .map(|config| config.internal_scene_id.to_string());
     let snapshot = SceneDocument {
         scene_configs,
-        selected_scene_internal_id: selected_scene_internal_id.clone(),
+        selected_scene_internal_id,
     };
 
     Ok(ImportedShowFile {
         snapshot,
         lockout: file.safety.lockout,
-        selected_scene_internal_id,
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -386,7 +384,7 @@ mod tests {
             uuid::Uuid::nil()
         );
         assert_eq!(
-            imported.selected_scene_internal_id,
+            imported.snapshot.selected_scene_internal_id,
             Some(
                 imported.snapshot.scene_configs[0]
                     .internal_scene_id

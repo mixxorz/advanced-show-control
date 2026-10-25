@@ -257,7 +257,6 @@ impl ProjectionCache {
             active_cue_list_id: state.cue_lists.document.active_cue_list_id,
             current_cue_entry_id: state.cue_lists.current_cue_entry_id,
             cued_cue_entry_id: state.cue_lists.document.cued_cue_entry_id,
-            last_cue_recall_status: state.cue_lists.last_recall_status.clone(),
             selected_scene_internal_id: state.scenes.selected_scene_internal_id.clone(),
             show_file_name: state.show.show_file_name.clone(),
             show_file_path: state
@@ -392,7 +391,6 @@ mod tests {
                 cued_cue_entry_id: None,
             },
             current_cue_entry_id: None,
-            last_recall_status: Some("recalled".to_string()),
         };
         cache.append_log(UiLogEvent {
             severity: LogSeverity::Info,
@@ -450,7 +448,6 @@ mod tests {
             snapshot.selected_scene_internal_id.as_deref(),
             Some("scene-config")
         );
-        assert_eq!(snapshot.last_cue_recall_status.as_deref(), Some("recalled"));
         assert_eq!(snapshot.logs[0].message, "kept");
         assert!(snapshot.state_version > version_a);
     }
@@ -629,7 +626,6 @@ mod tests {
                 cued_cue_entry_id: Some(cued_entry_id),
             },
             current_cue_entry_id: Some(current_entry_id),
-            last_recall_status: None,
         };
 
         let snapshot = cache.build_snapshot(&state);

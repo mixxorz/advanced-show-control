@@ -2,7 +2,7 @@ use tokio::sync::oneshot;
 
 use crate::lv1::{ConnectionStatus, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
-use crate::scenes::{SceneConfig, SceneDocument};
+use crate::scenes::SceneConfig;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -131,7 +131,7 @@ pub struct RecallSceneResult {
 /// reject the request.
 pub fn validate_recall_scene_request(
     lockout: bool,
-    scene_document: &SceneDocument,
+    scene_configs: &[SceneConfig],
     lv1: &Lv1StateSnapshot,
     internal_scene_id: Uuid,
 ) -> Result<RecallSceneResult, String> {
@@ -139,8 +139,7 @@ pub fn validate_recall_scene_request(
         return Err("Recall blocked: lockout is enabled".to_string());
     }
 
-    let scene = scene_document
-        .scene_configs
+    let scene = scene_configs
         .iter()
         .find(|scene| scene.internal_scene_id == internal_scene_id)
         .cloned()
@@ -204,10 +203,7 @@ mod tests {
     #[test]
     fn validate_recall_scene_request_uses_internal_scene_id() {
         let id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, Some(1))],
-        };
+        let scenes = vec![scene_config(id, Some(1))];
 
         let result = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap();
 
@@ -215,12 +211,48 @@ mod tests {
     }
 
     #[test]
+    fn validate_recall_scene_request_preserves_the_requested_config_from_a_borrowed_library() {
+        let id = Uuid::from_u128(2);
+        let mut requested = scene_config(id, Some(1));
+        requested.duration_ms = 2_500;
+        requested.scope_toggles.faders = true;
+        requested
+            .channel_configs
+            .push(crate::scenes::ChannelConfig {
+                group: 0,
+                channel: 3,
+                fader_db: Some(-6.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            });
+        let scenes = vec![scene_config(Uuid::from_u128(1), Some(1)), requested.clone()];
+        let before = scenes.clone();
+
+        let result = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap();
+
+        assert_eq!(result.scene, requested);
+        assert_eq!(result.lv1_scene_index, 1);
+        assert_eq!(scenes, before);
+    }
+
+    #[test]
+    fn validate_recall_scene_request_requires_exact_index_and_name() {
+        let id = Uuid::from_u128(1);
+        for (index, name) in [(2, "Intro"), (1, "Renamed")] {
+            let mut config = scene_config(id, Some(index));
+            config.scene_name = name.to_string();
+            let error =
+                validate_recall_scene_request(false, &[config], &lv1_snapshot(), id).unwrap_err();
+            assert_eq!(error, "Recall blocked: scene identity mismatch");
+        }
+    }
+
+    #[test]
     fn validate_recall_scene_request_rejects_unknown_scene_list() {
         let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, Some(1))],
-        };
+        let scenes = vec![scene_config(id, Some(1))];
         let mut snapshot = lv1_snapshot();
         snapshot.scene_list = None;
 
@@ -232,10 +264,7 @@ mod tests {
     #[test]
     fn validate_recall_scene_request_rejects_unlinked_scene() {
         let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let scenes = SceneDocument {
-            selected_scene_internal_id: None,
-            scene_configs: vec![scene_config(id, None)],
-        };
+        let scenes = vec![scene_config(id, None)];
 
         let err = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap_err();
 
