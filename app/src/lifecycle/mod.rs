@@ -48,13 +48,33 @@ struct BuiltConnectedRuntime {
     lv1_events: tokio::sync::broadcast::Receiver<AppEvent>,
 }
 
+struct InstalledCandidate(BuiltConnectedRuntime);
+
 impl BuiltConnectedRuntime {
+    async fn install(
+        self,
+        lifecycle: &AppLifecycle,
+    ) -> Result<InstalledCandidate, InstalledRuntime> {
+        lifecycle
+            .install_runtime_transaction(self.runtime.clone())
+            .await?;
+        Ok(InstalledCandidate(self))
+    }
+}
+
+impl InstalledCandidate {
     fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
-        self.lv1_task.spawn();
-        self.fade_task.spawn();
+        let BuiltConnectedRuntime {
+            runtime,
+            lv1_task,
+            fade_task,
+            lv1_events,
+        } = self.0;
+        lv1_task.spawn();
+        fade_task.spawn();
         StartedConnectedRuntime {
-            runtime: self.runtime,
-            lv1_events: self.lv1_events,
+            runtime,
+            lv1_events,
             #[cfg(test)]
             before_connection_metadata: None,
         }
@@ -104,10 +124,65 @@ struct RuntimeClearTransaction {
     active_generation: u64,
 }
 
+enum RuntimeSlot {
+    Vacant,
+    Installed(InstalledRuntime),
+}
+
+impl RuntimeSlot {
+    fn as_ref(&self) -> Option<&InstalledRuntime> {
+        match self {
+            Self::Vacant => None,
+            Self::Installed(runtime) => Some(runtime),
+        }
+    }
+}
+
+enum ProjectorState {
+    NotStarted,
+    Running(crate::projector::ProjectionSink),
+}
+
+/// Phases of acceptance after an installed candidate has connected.
+/// The payload is only available once the preceding owner has accepted its step.
+enum AcceptancePhase {
+    ShowMetadata(crate::lv1::Lv1StateSnapshot),
+    ScenePeers {
+        snapshot: crate::lv1::Lv1StateSnapshot,
+        changed: bool,
+    },
+    RememberIdentity {
+        changed: bool,
+    },
+    Confirm {
+        changed: bool,
+    },
+}
+
+enum DisconnectPhase {
+    ClearMetadata,
+    ClearRuntime,
+    Publish(RuntimeClearTransaction),
+}
+
+enum DiscoveryPhase {
+    Collecting(tokio::task::JoinHandle<std::io::Result<Vec<crate::lv1::DiscoveryEntry>>>),
+    Publishing(Vec<crate::connection_state::DiscoveredLv1System>),
+    AwaitingAcceptance(oneshot::Receiver<ShowCommandResult>),
+}
+
+enum StartupConnectionPhase {
+    Discovering(crate::connection_state::Lv1SystemIdentity),
+    Selecting {
+        remembered: crate::connection_state::Lv1SystemIdentity,
+        systems: Vec<crate::connection_state::DiscoveredLv1System>,
+    },
+}
+
 struct LifecycleInner {
     generation: RuntimeGeneration,
-    runtime: Option<InstalledRuntime>,
-    projection_sink: Option<crate::projector::ProjectionSink>,
+    runtime: RuntimeSlot,
+    projector: ProjectorState,
 }
 
 #[derive(Clone)]
@@ -176,8 +251,8 @@ impl AppLifecycle {
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
                 generation: runtime_generation,
-                runtime: None,
-                projection_sink: None,
+                runtime: RuntimeSlot::Vacant,
+                projector: ProjectorState::NotStarted,
             })),
             event_bus,
             show,
@@ -253,7 +328,7 @@ impl AppLifecycle {
 
         self.show_peers
             .set_lv1(runtime.generation, runtime.lv1.clone());
-        inner.runtime = Some(runtime);
+        inner.runtime = RuntimeSlot::Installed(runtime);
         Ok(())
     }
 
@@ -311,7 +386,7 @@ impl AppLifecycle {
             .advance_if_current(expected_generation)
             .await?;
 
-        inner.runtime = None;
+        inner.runtime = RuntimeSlot::Vacant;
         self.show_peers.clear_lv1(expected_generation);
         self.scenes_peers
             .clear_peers_for_generation(expected_generation);
@@ -346,7 +421,7 @@ impl AppLifecycle {
         drop(candidate);
         let mut inner = self.inner.lock().await;
         if inner.runtime.as_ref().map(|runtime| runtime.generation) == Some(generation) {
-            inner.runtime = None;
+            inner.runtime = RuntimeSlot::Vacant;
             self.scenes_peers.clear_peers_for_generation(generation);
         }
         drop(inner);
@@ -381,14 +456,14 @@ impl AppLifecycle {
             &identity,
             self.event_bus.clone(),
         );
-        if let Err(runtime) = self
-            .install_runtime_transaction(built_runtime.runtime.clone())
-            .await
-        {
-            self.abort_rejected_connection_transaction(runtime).await;
-            return Err("generation is stale".to_string());
-        }
-        let started_runtime = built_runtime.spawn_lv1_and_fade();
+        let installed = match built_runtime.install(self).await {
+            Ok(installed) => installed,
+            Err(runtime) => {
+                self.abort_rejected_connection_transaction(runtime).await;
+                return Err("generation is stale".to_string());
+            }
+        };
+        let started_runtime = installed.spawn_lv1_and_fade();
 
         self.finish_connect_transaction(identity, started_runtime)
             .await
@@ -466,72 +541,74 @@ impl AppLifecycle {
             before_connection_metadata(self.current_runtime_generation().await).await;
         }
 
-        let completion = match self
-            .set_lv1_connection_metadata(generation, Some(identity.clone()))
-            .await
-        {
-            Ok(completion) => completion,
-            Err(error) => {
-                self.abort_rejected_connection_transaction(runtime).await;
-                return Err(error.to_string());
-            }
-        };
-        if !completion.accepted {
-            self.abort_rejected_connection_transaction(runtime).await;
-            return Err("LV1 connection was superseded".to_string());
-        }
-
-        if !self.install_accepted_scene_peers(generation).await {
-            self.abort_rejected_connection_transaction(runtime).await;
-            return Err("generation is stale".to_string());
-        }
-        let (peers_ready_reply, peers_ready_result) = tokio::sync::oneshot::channel();
-        let peers_ready = self
-            .scenes
-            .send(crate::scenes::ScenesCommand::RuntimePeersReady {
-                generation,
-                initial_scene_list: initial_snapshot.scene_list,
-                reply: peers_ready_reply,
-            })
-            .await;
-        let peers_ready_succeeded =
-            matches!(peers_ready, Ok(()) if matches!(peers_ready_result.await, Ok(Ok(()))));
-        if !peers_ready_succeeded {
-            self.abort_rejected_connection_transaction(runtime).await;
-            return Err("scene actor is unavailable".to_string());
-        }
-
-        if let Err(error) = self
-            .remember_last_connected_lv1(generation, identity.clone())
-            .await
-        {
-            self.log_last_connected_lv1_save_failure(generation, error)
-                .await;
-        }
-        let result = ConnectCommandResult {
-            changed: completion.changed,
-        };
-        #[cfg(test)]
-        self.run_before_connection_success().await;
-        let accepted = self
-            .current_runtime_generation()
-            .await
-            .if_current(generation, || {
-                let host = identity.host.as_deref().unwrap_or(&identity.address);
-                tracing::info!(
-                    event = "lv1_connected",
-                    host = %host,
-                    port = identity.port,
-                    "LV1 connected"
-                );
-                result
-            })
-            .await;
-        if let Some(accepted) = accepted {
-            Ok(accepted)
-        } else {
-            self.abort_rejected_connection_transaction(runtime).await;
-            Err("LV1 connection was superseded".to_string())
+        let mut phase = AcceptancePhase::ShowMetadata(initial_snapshot);
+        loop {
+            phase = match phase {
+                AcceptancePhase::ShowMetadata(snapshot) => {
+                    let completion = match self
+                        .set_lv1_connection_metadata(generation, Some(identity.clone()))
+                        .await
+                    {
+                        Ok(completion) => completion,
+                        Err(error) => {
+                            self.abort_rejected_connection_transaction(runtime).await;
+                            return Err(error.to_string());
+                        }
+                    };
+                    if !completion.accepted {
+                        self.abort_rejected_connection_transaction(runtime).await;
+                        return Err("LV1 connection was superseded".to_string());
+                    }
+                    AcceptancePhase::ScenePeers {
+                        snapshot,
+                        changed: completion.changed,
+                    }
+                }
+                AcceptancePhase::ScenePeers { snapshot, changed } => {
+                    if !self.install_accepted_scene_peers(generation).await {
+                        self.abort_rejected_connection_transaction(runtime).await;
+                        return Err("generation is stale".to_string());
+                    }
+                    let (reply, response) = tokio::sync::oneshot::channel();
+                    let sent = self
+                        .scenes
+                        .send(crate::scenes::ScenesCommand::RuntimePeersReady {
+                            generation,
+                            initial_scene_list: snapshot.scene_list,
+                            reply,
+                        })
+                        .await;
+                    if !matches!(sent, Ok(()) if matches!(response.await, Ok(Ok(())))) {
+                        self.abort_rejected_connection_transaction(runtime).await;
+                        return Err("scene actor is unavailable".to_string());
+                    }
+                    AcceptancePhase::RememberIdentity { changed }
+                }
+                AcceptancePhase::RememberIdentity { changed } => {
+                    if let Err(error) = self
+                        .remember_last_connected_lv1(generation, identity.clone())
+                        .await
+                    {
+                        self.log_last_connected_lv1_save_failure(generation, error)
+                            .await;
+                    }
+                    AcceptancePhase::Confirm { changed }
+                }
+                AcceptancePhase::Confirm { changed } => {
+                    #[cfg(test)]
+                    self.run_before_connection_success().await;
+                    let accepted = self.current_runtime_generation().await.if_current(generation, || {
+                        let host = identity.host.as_deref().unwrap_or(&identity.address);
+                        tracing::info!(event = "lv1_connected", host = %host, port = identity.port, "LV1 connected");
+                        ConnectCommandResult { changed }
+                    }).await;
+                    if let Some(accepted) = accepted {
+                        return Ok(accepted);
+                    }
+                    self.abort_rejected_connection_transaction(runtime).await;
+                    return Err("LV1 connection was superseded".to_string());
+                }
+            };
         }
     }
 
@@ -626,26 +703,39 @@ impl AppLifecycle {
     /// return `changed: false`. Show mailbox or reply failures MUST return `Err` without clearing
     /// runtime endpoints or publishing disconnect success facts or log.
     async fn finish_disconnect(&self, generation: u64) -> Result<ShowCommandResult, String> {
-        let cleared = self
-            .set_lv1_connection_metadata(generation, None)
-            .await
-            .map_err(|error| error.to_string())?;
-        if !cleared.accepted {
-            return Ok(self.superseded_disconnect(generation));
+        let mut phase = DisconnectPhase::ClearMetadata;
+        loop {
+            phase = match phase {
+                DisconnectPhase::ClearMetadata => {
+                    let cleared = self
+                        .set_lv1_connection_metadata(generation, None)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if !cleared.accepted {
+                        return Ok(self.superseded_disconnect(generation));
+                    }
+                    DisconnectPhase::ClearRuntime
+                }
+                DisconnectPhase::ClearRuntime => {
+                    let Some(transaction) = self.clear_runtime_if_current(generation).await else {
+                        return Ok(self.superseded_disconnect(generation));
+                    };
+                    DisconnectPhase::Publish(transaction)
+                }
+                DisconnectPhase::Publish(transaction) => {
+                    self.event_bus.publish(AppEvent::Lv1 {
+                        generation: transaction.cleared_generation,
+                        event: Lv1Event::Disconnected {
+                            reason: "Disconnected by user".to_string(),
+                        },
+                    });
+                    self.event_bus
+                        .publish_runtime_generation_changed(transaction.active_generation);
+                    tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
+                    return Ok(ShowCommandResult { changed: true });
+                }
+            };
         }
-        let Some(transaction) = self.clear_runtime_if_current(generation).await else {
-            return Ok(self.superseded_disconnect(generation));
-        };
-        self.event_bus.publish(AppEvent::Lv1 {
-            generation: transaction.cleared_generation,
-            event: Lv1Event::Disconnected {
-                reason: "Disconnected by user".to_string(),
-            },
-        });
-        self.event_bus
-            .publish_runtime_generation_changed(transaction.active_generation);
-        tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
-        Ok(ShowCommandResult { changed: true })
     }
 
     pub async fn current_runtime_generation(&self) -> RuntimeGeneration {
@@ -783,24 +873,40 @@ impl AppLifecycle {
             timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
             ..Default::default()
         };
-        let systems = tokio::task::spawn_blocking(move || discover(options))
-            .await
-            .map_err(|error| format!("LV1 discovery worker failed: {error}"))?
-            .map_err(|error| format!("Failed to discover LV1 systems: {error}"))?
-            .iter()
-            .filter_map(crate::connection_state::system_from_discovery)
-            .collect();
-        let (reply, response) = oneshot::channel();
-        self.show
-            .send(ShowCommand::SetDiscoveredLv1Systems {
-                systems,
-                reply: Some(reply),
-            })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        response
-            .await
-            .map_err(|_| "Show state reply channel is closed".to_string())
+        let mut phase =
+            DiscoveryPhase::Collecting(tokio::task::spawn_blocking(move || discover(options)));
+        loop {
+            phase = match phase {
+                DiscoveryPhase::Collecting(worker) => {
+                    let entries = worker
+                        .await
+                        .map_err(|error| format!("LV1 discovery worker failed: {error}"))?
+                        .map_err(|error| format!("Failed to discover LV1 systems: {error}"))?;
+                    DiscoveryPhase::Publishing(
+                        entries
+                            .iter()
+                            .filter_map(crate::connection_state::system_from_discovery)
+                            .collect(),
+                    )
+                }
+                DiscoveryPhase::Publishing(systems) => {
+                    let (reply, response) = oneshot::channel();
+                    self.show
+                        .send(ShowCommand::SetDiscoveredLv1Systems {
+                            systems,
+                            reply: Some(reply),
+                        })
+                        .await
+                        .map_err(|_| "Show state is unavailable".to_string())?;
+                    DiscoveryPhase::AwaitingAcceptance(response)
+                }
+                DiscoveryPhase::AwaitingAcceptance(response) => {
+                    return response
+                        .await
+                        .map_err(|_| "Show state reply channel is closed".to_string());
+                }
+            };
+        }
     }
 
     /// @cc [owner:mixxorz,label:product] no-remembered-startup-noop
@@ -812,19 +918,34 @@ impl AppLifecycle {
             return Ok(ConnectCommandResult { changed: false });
         };
 
-        self.refresh_lv1_discovery(None).await?;
-
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        let state = rx
-            .await
-            .map_err(|_| "Show state reply channel is closed".to_string())?;
-
-        self.startup_auto_connect_with_discovered(remembered, &state.discovered_lv1_systems)
-            .await
+        let mut phase = StartupConnectionPhase::Discovering(remembered);
+        loop {
+            phase = match phase {
+                StartupConnectionPhase::Discovering(remembered) => {
+                    self.refresh_lv1_discovery(None).await?;
+                    let (reply, response) = oneshot::channel();
+                    self.show
+                        .send(ShowCommand::InitialProjectionState { reply })
+                        .await
+                        .map_err(|_| "Show state is unavailable".to_string())?;
+                    let state = response
+                        .await
+                        .map_err(|_| "Show state reply channel is closed".to_string())?;
+                    StartupConnectionPhase::Selecting {
+                        remembered,
+                        systems: state.discovered_lv1_systems,
+                    }
+                }
+                StartupConnectionPhase::Selecting {
+                    remembered,
+                    systems,
+                } => {
+                    return self
+                        .startup_auto_connect_with_discovered(remembered, &systems)
+                        .await;
+                }
+            };
+        }
     }
 
     /// @cc [owner:mixxorz,label:safety] startup-auto-connect-safe-match-only
@@ -859,7 +980,7 @@ impl AppLifecycle {
         logs: tokio::sync::broadcast::Receiver<UiLogEvent>,
     ) -> crate::projector::ProjectionSubscription {
         let mut inner = self.inner.lock().await;
-        if let Some(sink) = &inner.projection_sink {
+        if let ProjectorState::Running(sink) = &inner.projector {
             return sink.subscribe();
         }
         let (sink, subscription) = crate::projector::projection_channel();
@@ -868,7 +989,7 @@ impl AppLifecycle {
             state: self.event_bus.state(),
             logs,
         });
-        inner.projection_sink = Some(sink);
+        inner.projector = ProjectorState::Running(sink);
         subscription
     }
 }
@@ -903,67 +1024,56 @@ async fn request_lv1_snapshot_before(
     .map_err(|_| "LV1 did not connect".to_string())?
 }
 
+enum ConnectedSnapshotPhase {
+    RequestSnapshot,
+    AwaitConnectedFact,
+}
+
 async fn wait_for_connected_snapshot(
     lv1: &Lv1ActorHandle,
     generation: u64,
     events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> Result<crate::lv1::Lv1StateSnapshot, String> {
     let deadline = tokio::time::Instant::now() + CONNECTION_READY_TIMEOUT;
-    let initial_snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
-    match initial_snapshot.connection {
-        ConnectionStatus::Connected => return Ok(initial_snapshot),
-        ConnectionStatus::Disconnected => return Err("LV1 did not connect".to_string()),
-        ConnectionStatus::Connecting => {}
-    }
-
+    let mut phase = ConnectedSnapshotPhase::RequestSnapshot;
     let timeout = tokio::time::sleep_until(deadline);
     tokio::pin!(timeout);
     loop {
-        tokio::select! {
-            _ = &mut timeout => return Err("LV1 did not connect".to_string()),
-            event = events.recv() => match event {
-                Ok(AppEvent::Lv1 {
-                    generation: event_generation,
-                    event: Lv1Event::Connected,
-                }) if event_generation == generation => {
-                    let snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
-                    match snapshot.connection {
-                        ConnectionStatus::Connected => return Ok(snapshot),
-                        ConnectionStatus::Disconnected => {
-                            return Err("LV1 did not connect".to_string());
-                        }
-                        ConnectionStatus::Connecting => {}
-                    }
+        phase = match phase {
+            ConnectedSnapshotPhase::RequestSnapshot => {
+                let snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
+                match snapshot.connection {
+                    ConnectionStatus::Connected => return Ok(snapshot),
+                    ConnectionStatus::Disconnected => return Err("LV1 did not connect".to_string()),
+                    ConnectionStatus::Connecting => ConnectedSnapshotPhase::AwaitConnectedFact,
                 }
-                Ok(AppEvent::Lv1 {
-                    generation: event_generation,
-                    event: Lv1Event::Disconnected { .. },
-                }) if event_generation == generation => {
-                    return Err("LV1 did not connect".to_string());
-                }
-                Ok(AppEvent::Runtime(
-                    crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                        generation: active_generation,
-                    },
-                )) if active_generation != generation => {
-                    return Err("LV1 connection was superseded".to_string());
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
-                    match snapshot.connection {
-                        ConnectionStatus::Connected => return Ok(snapshot),
-                        ConnectionStatus::Disconnected => {
-                            return Err("LV1 did not connect".to_string());
-                        }
-                        ConnectionStatus::Connecting => {}
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err("LV1 event stream is closed".to_string());
-                }
-                _ => {}
             }
-        }
+            ConnectedSnapshotPhase::AwaitConnectedFact => {
+                tokio::select! {
+                    _ = &mut timeout => return Err("LV1 did not connect".to_string()),
+                    event = events.recv() => match event {
+                        Ok(AppEvent::Lv1 {
+                            generation: event_generation,
+                            event: Lv1Event::Connected,
+                        }) if event_generation == generation => ConnectedSnapshotPhase::RequestSnapshot,
+                        Ok(AppEvent::Lv1 {
+                            generation: event_generation,
+                            event: Lv1Event::Disconnected { .. },
+                        }) if event_generation == generation => return Err("LV1 did not connect".to_string()),
+                        Ok(AppEvent::Runtime(
+                            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                                generation: active_generation,
+                            },
+                        )) if active_generation != generation => {
+                            return Err("LV1 connection was superseded".to_string());
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => ConnectedSnapshotPhase::RequestSnapshot,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return Err("LV1 event stream is closed".to_string()),
+                        _ => ConnectedSnapshotPhase::AwaitConnectedFact,
+                    }
+                }
+            }
+        };
     }
 }
 

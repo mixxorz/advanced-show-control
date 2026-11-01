@@ -98,32 +98,37 @@ pub enum CaptureResult {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ShortcutCapture {
-    active_id: Option<String>,
+pub enum ShortcutCapture {
+    #[default]
+    Idle,
+    Recording(String),
 }
 
 impl ShortcutCapture {
     pub fn active_id(&self) -> Option<&str> {
-        self.active_id.as_deref()
+        match self {
+            Self::Idle => None,
+            Self::Recording(id) => Some(id.as_str()),
+        }
     }
 
     pub fn start(&mut self, id: impl Into<String>) {
-        self.active_id = Some(id.into());
+        *self = Self::Recording(id.into());
     }
 
     /// Capture is intentionally evaluated before GO/CUE routing.
     pub fn route(&mut self, event: &KeyDownEvent) -> CaptureResult {
-        if self.active_id.is_none() {
+        if matches!(self, Self::Idle) {
             return CaptureResult::Inactive;
         }
         if normalized_physical_key(&event.keystroke) == "Escape" {
-            self.active_id = None;
+            *self = Self::Idle;
             return CaptureResult::Cancelled;
         }
         if is_modifier_only(&event.keystroke) {
             return CaptureResult::Pending;
         }
-        self.active_id = None;
+        *self = Self::Idle;
         CaptureResult::Captured(shortcut_from_event(event))
     }
 }

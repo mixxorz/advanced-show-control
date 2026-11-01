@@ -11,12 +11,34 @@ use super::ProjectionCache;
 pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
+enum PublishedView {
+    AwaitingFirst,
+    Ready(Box<AppViewState>),
+}
+
+#[derive(Clone, Copy)]
+enum PublicationState {
+    Clean,
+    Dirty,
+}
+
+impl PublicationState {
+    fn invalidate(&mut self) {
+        *self = Self::Dirty;
+    }
+
+    fn take_dirty(&mut self) -> bool {
+        matches!(std::mem::replace(self, Self::Clean), Self::Dirty)
+    }
+}
+
+#[derive(Clone)]
 pub struct ProjectionSink {
-    snapshots: watch::Sender<Option<AppViewState>>,
+    snapshots: watch::Sender<PublishedView>,
 }
 
 pub struct ProjectionSubscription {
-    snapshots: watch::Receiver<Option<AppViewState>>,
+    snapshots: watch::Receiver<PublishedView>,
 }
 
 impl ProjectionSink {
@@ -27,7 +49,8 @@ impl ProjectionSink {
     }
 
     fn publish(&self, snapshot: AppViewState) {
-        self.snapshots.send_replace(Some(snapshot));
+        self.snapshots
+            .send_replace(PublishedView::Ready(Box::new(snapshot)));
     }
 }
 
@@ -37,7 +60,10 @@ impl ProjectionSubscription {
     }
 
     pub fn latest(&mut self) -> Option<AppViewState> {
-        self.snapshots.borrow_and_update().clone()
+        match &*self.snapshots.borrow_and_update() {
+            PublishedView::AwaitingFirst => None,
+            PublishedView::Ready(snapshot) => Some((**snapshot).clone()),
+        }
     }
 }
 
@@ -45,7 +71,7 @@ impl ProjectionSubscription {
 /// The host-neutral projection channel MUST retain only the latest complete snapshot so a slow or
 /// late host bridge can resume from current state without replaying stale intermediate views.
 pub fn projection_channel() -> (ProjectionSink, ProjectionSubscription) {
-    let (snapshots, receiver) = watch::channel(None);
+    let (snapshots, receiver) = watch::channel(PublishedView::AwaitingFirst);
     (
         ProjectionSink { snapshots },
         ProjectionSubscription {
@@ -90,26 +116,25 @@ pub fn spawn_projector(inputs: ProjectorInputs) -> tokio::task::JoinHandle<()> {
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
-        let mut dirty = true;
+        let mut publication = PublicationState::Dirty;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if dirty {
+                    if publication.take_dirty() {
                         let snapshot = cache.build_snapshot(&state.borrow_and_update());
                         sink.publish(snapshot);
-                        dirty = false;
                     }
                 }
                 changed = state.changed() => {
                     if changed.is_err() { break; }
-                    dirty = true;
+                    publication.invalidate();
                 }
                 received = logs.recv() => match received {
                     Ok(ui_log) => {
                         cache.append_log(ui_log);
-                        dirty = true;
+                        publication.invalidate();
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => dirty = true,
+                    Err(broadcast::error::RecvError::Lagged(_)) => publication.invalidate(),
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
             }

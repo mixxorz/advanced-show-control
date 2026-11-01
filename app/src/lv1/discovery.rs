@@ -81,6 +81,14 @@ pub fn entry_matches(entry: &DiscoveryEntry, service: &str, host_ip: Option<&str
     }
 }
 
+enum DiscoveryWindow {
+    Listening {
+        deadline: std::time::Instant,
+        found: std::collections::BTreeMap<String, DiscoveryEntry>,
+    },
+    Complete(Vec<DiscoveryEntry>),
+}
+
 pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>> {
     use std::collections::BTreeMap;
     use std::net::{SocketAddrV4, UdpSocket};
@@ -102,39 +110,46 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
         &Ipv4Addr::UNSPECIFIED,
     )?;
 
-    let deadline = Instant::now() + options.timeout;
-    let mut found = BTreeMap::<String, DiscoveryEntry>::new();
+    let mut window = DiscoveryWindow::Listening {
+        deadline: Instant::now() + options.timeout,
+        found: BTreeMap::new(),
+    };
     let mut buf = [0_u8; 65_536];
-
-    while Instant::now() < deadline {
-        let Some(read_timeout) =
-            read_timeout_for(deadline.saturating_duration_since(Instant::now()))
-        else {
-            break;
-        };
-        socket.set_read_timeout(Some(read_timeout))?;
-
-        match socket.recv_from(&mut buf) {
-            Ok((size, source)) => {
-                if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
-                    && entry_matches(
-                        &entry,
-                        &options.filter_service,
-                        options.filter_host_ip.as_deref(),
-                    )
-                {
-                    let key = dedupe_key(&entry);
-                    found.entry(key).or_insert(entry);
+    loop {
+        window = match window {
+            DiscoveryWindow::Listening {
+                deadline,
+                mut found,
+            } => {
+                let Some(read_timeout) =
+                    read_timeout_for(deadline.saturating_duration_since(Instant::now()))
+                else {
+                    window = DiscoveryWindow::Complete(found.into_values().collect());
+                    continue;
+                };
+                socket.set_read_timeout(Some(read_timeout))?;
+                match socket.recv_from(&mut buf) {
+                    Ok((size, source)) => {
+                        if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
+                            && entry_matches(
+                                &entry,
+                                &options.filter_service,
+                                options.filter_host_ip.as_deref(),
+                            )
+                        {
+                            found.entry(dedupe_key(&entry)).or_insert(entry);
+                        }
+                    }
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            || err.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(err) => return Err(err),
                 }
+                DiscoveryWindow::Listening { deadline, found }
             }
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => return Err(err),
-        }
+            DiscoveryWindow::Complete(entries) => return Ok(entries),
+        };
     }
-
-    Ok(found.into_values().collect())
 }
 
 fn dedupe_key(entry: &DiscoveryEntry) -> String {

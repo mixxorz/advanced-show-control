@@ -6,7 +6,7 @@ use crate::fade::commands::{
 };
 use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
-use crate::fade::types::FadeSceneIdentity;
+use crate::fade::types::{FadeSceneIdentity, FadeTargetKey};
 use crate::runtime::events::AppEventBus;
 
 pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
@@ -14,12 +14,45 @@ pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
 struct ReadinessBarrier {
     scene_index: i32,
     scene_name: String,
-    last_counted_ping_sequence: u64,
-    observed_ping_count: u8,
-    missed_events: bool,
+    progress: ReadinessProgress,
     deadline: tokio::time::Instant,
     completion: Option<oneshot::Sender<Result<(), RecallReadinessError>>>,
     timeout_ms: u64,
+}
+
+/// Stored readiness phases. Lag is terminal until cancellation/replacement/timeout.
+#[derive(Debug, Clone, Copy)]
+enum ReadinessProgress {
+    AwaitingFirst { after: u64 },
+    AwaitingSecond { after: u64 },
+    Lagged { observed: u8 },
+}
+
+impl ReadinessProgress {
+    fn observed(self) -> u8 {
+        match self {
+            Self::AwaitingFirst { .. } => 0,
+            Self::AwaitingSecond { .. } => 1,
+            Self::Lagged { observed } => observed,
+        }
+    }
+
+    fn observe(&mut self, sequence: u64) -> PingGateProgress {
+        match *self {
+            Self::AwaitingFirst { after } if sequence > after => {
+                *self = Self::AwaitingSecond { after: sequence };
+                PingGateProgress::Waiting { observed: 1 }
+            }
+            Self::AwaitingSecond { after } if sequence > after => PingGateProgress::Released,
+            _ => PingGateProgress::Ignored,
+        }
+    }
+
+    fn lag(&mut self) {
+        *self = Self::Lagged {
+            observed: self.observed(),
+        };
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +111,17 @@ impl EngineState {
         count
     }
 
+    /// Key ownership transitions are atomic: installing replaces only that key;
+    /// removing ends its running/paused target lifecycle without touching other owners.
+    pub(super) fn install_target(&mut self, target: ActiveTarget) {
+        self.channels.retain(|active| active.key != target.key);
+        self.channels.push(target);
+    }
+
+    pub(super) fn release_target(&mut self, key: &FadeTargetKey) {
+        self.channels.retain(|target| &target.key != key);
+    }
+
     pub(super) fn generation(&self) -> u64 {
         self.generation
     }
@@ -112,9 +156,9 @@ impl EngineState {
         self.readiness_barrier = Some(ReadinessBarrier {
             scene_index,
             scene_name,
-            last_counted_ping_sequence: ping_sequence,
-            observed_ping_count: 0,
-            missed_events: false,
+            progress: ReadinessProgress::AwaitingFirst {
+                after: ping_sequence,
+            },
             deadline,
             timeout_ms: deadline
                 .saturating_duration_since(tokio::time::Instant::now())
@@ -127,7 +171,7 @@ impl EngineState {
 
     pub(super) fn mark_readiness_lagged(&mut self) {
         if let Some(barrier) = self.readiness_barrier.as_mut() {
-            barrier.missed_events = true;
+            barrier.progress.lag();
         }
     }
 
@@ -146,20 +190,12 @@ impl EngineState {
             return PingGateProgress::Ignored;
         };
 
-        if now >= barrier.deadline
-            || barrier.missed_events
-            || generation != self.generation
-            || sequence <= barrier.last_counted_ping_sequence
-        {
+        if now >= barrier.deadline || generation != self.generation {
             return PingGateProgress::Ignored;
         }
-
-        barrier.last_counted_ping_sequence = sequence;
-        barrier.observed_ping_count = barrier.observed_ping_count.saturating_add(1);
-        if barrier.observed_ping_count < READINESS_PINGS_REQUIRED {
-            return PingGateProgress::Waiting {
-                observed: barrier.observed_ping_count,
-            };
+        match barrier.progress.observe(sequence) {
+            PingGateProgress::Released => {}
+            progress => return progress,
         }
 
         let barrier = self
@@ -191,7 +227,7 @@ impl EngineState {
                 generation: self.generation,
                 scene_index: barrier.scene_index,
                 scene_name: barrier.scene_name.clone(),
-                observed_ping_count: barrier.observed_ping_count,
+                observed_ping_count: barrier.progress.observed(),
                 completion_owned: barrier.completion.is_some(),
                 timeout_ms: barrier.timeout_ms,
             };
@@ -223,5 +259,26 @@ impl EngineState {
         {
             let _ = completion.send(Err(RecallReadinessError::Cancelled(cancellation)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_requires_two_newer_sequences_and_lag_cannot_release() {
+        let mut progress = ReadinessProgress::AwaitingFirst { after: 10 };
+        assert_eq!(progress.observe(10), PingGateProgress::Ignored);
+        assert_eq!(
+            progress.observe(11),
+            PingGateProgress::Waiting { observed: 1 }
+        );
+        assert_eq!(progress.observe(11), PingGateProgress::Ignored);
+        let mut poisoned = progress;
+        poisoned.lag();
+        assert_eq!(poisoned.observe(12), PingGateProgress::Ignored);
+        assert_eq!(poisoned.observed(), 1);
+        assert_eq!(progress.observe(12), PingGateProgress::Released);
     }
 }

@@ -21,15 +21,55 @@ struct GoPresentationEntry {
     command_id: u64,
     started_state_version: u64,
     intended_entry_id: Option<Uuid>,
-    command_succeeded: bool,
-    snapshot_acknowledged: bool,
+    phase: GoAcknowledgments,
+}
+
+/// Command admission and projected presentation are independent acknowledgments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GoAcknowledgments {
+    AwaitingBoth,
+    AwaitingProjection,
+    AwaitingCommand,
+    Complete,
+}
+
+impl GoAcknowledgments {
+    fn command_pending(self) -> bool {
+        matches!(self, Self::AwaitingBoth | Self::AwaitingCommand)
+    }
+
+    fn projection_pending(self) -> bool {
+        matches!(self, Self::AwaitingBoth | Self::AwaitingProjection)
+    }
+
+    fn command_succeeded(&mut self) {
+        *self = match self {
+            Self::AwaitingBoth | Self::AwaitingProjection => Self::AwaitingProjection,
+            Self::AwaitingCommand | Self::Complete => Self::Complete,
+        };
+    }
+
+    fn projection_received(&mut self) {
+        *self = match self {
+            Self::AwaitingBoth | Self::AwaitingCommand => Self::AwaitingCommand,
+            Self::AwaitingProjection | Self::Complete => Self::Complete,
+        };
+    }
+
+    fn rebase_projection(&mut self) {
+        *self = if self.command_pending() {
+            Self::AwaitingBoth
+        } else {
+            Self::AwaitingProjection
+        };
+    }
 }
 
 impl GoSubmissionGuard {
     pub fn can_submit(&self) -> bool {
         self.presentation_queue
             .iter()
-            .filter(|entry| !entry.command_succeeded)
+            .filter(|entry| entry.phase.command_pending())
             .count()
             < GO_SUBMISSION_CAPACITY
     }
@@ -37,7 +77,7 @@ impl GoSubmissionGuard {
     pub fn presentation_pending_count(&self) -> usize {
         self.presentation_queue
             .iter()
-            .filter(|entry| !entry.snapshot_acknowledged)
+            .filter(|entry| entry.phase.projection_pending())
             .count()
     }
 
@@ -47,14 +87,13 @@ impl GoSubmissionGuard {
             !self
                 .presentation_queue
                 .iter()
-                .any(|entry| { entry.command_id == command_id && !entry.command_succeeded })
+                .any(|entry| { entry.command_id == command_id && entry.phase.command_pending() })
         );
         self.presentation_queue.push_back(GoPresentationEntry {
             command_id,
             started_state_version: state_version,
             intended_entry_id: Some(intended_entry_id),
-            command_succeeded: false,
-            snapshot_acknowledged: false,
+            phase: GoAcknowledgments::AwaitingBoth,
         });
     }
 
@@ -67,7 +106,7 @@ impl GoSubmissionGuard {
         let Some(index) = self
             .presentation_queue
             .iter()
-            .position(|entry| entry.command_id == command_id && !entry.command_succeeded)
+            .position(|entry| entry.command_id == command_id && entry.phase.command_pending())
         else {
             return false;
         };
@@ -75,7 +114,7 @@ impl GoSubmissionGuard {
             if self.presentation_queue[index].intended_entry_id != Some(recalled_entry_id) {
                 self.rebase_from(index, recalled_entry_id, snapshot);
             }
-            self.presentation_queue[index].command_succeeded = true;
+            self.presentation_queue[index].phase.command_succeeded();
         } else {
             let failed_entry_id = self.presentation_queue[index].intended_entry_id;
             self.presentation_queue.remove(index);
@@ -104,8 +143,8 @@ impl GoSubmissionGuard {
         };
         let mut changed = false;
         for entry in self.presentation_queue.iter_mut().take(index + 1) {
-            changed |= !entry.snapshot_acknowledged;
-            entry.snapshot_acknowledged = true;
+            changed |= entry.phase.projection_pending();
+            entry.phase.projection_received();
         }
         self.prune_acknowledged_successes();
         changed
@@ -129,7 +168,7 @@ impl GoSubmissionGuard {
         let mut ids = entries.iter().skip(first_index).map(|entry| entry.id);
         for entry in self.presentation_queue.iter_mut().skip(index) {
             entry.intended_entry_id = ids.next();
-            entry.snapshot_acknowledged = false;
+            entry.phase.rebase_projection();
         }
     }
 
@@ -137,7 +176,7 @@ impl GoSubmissionGuard {
         while self
             .presentation_queue
             .front()
-            .is_some_and(|entry| entry.command_succeeded && entry.snapshot_acknowledged)
+            .is_some_and(|entry| entry.phase == GoAcknowledgments::Complete)
         {
             self.presentation_queue.pop_front();
         }
@@ -153,11 +192,26 @@ pub enum MainTab {
 }
 
 #[derive(Default)]
+enum SnapshotPhase {
+    #[default]
+    Uninitialized,
+    Initialized,
+}
+
+#[derive(Default)]
+enum CommandOutcome {
+    Pending,
+    #[default]
+    Succeeded,
+    Failed(String),
+}
+
+#[derive(Default)]
 pub struct PresentationState {
     snapshot: AppViewState,
-    has_snapshot: bool,
+    snapshot_phase: SnapshotPhase,
     latest_command_id: u64,
-    command_error: Option<String>,
+    command_outcome: CommandOutcome,
 }
 
 impl PresentationState {
@@ -166,15 +220,19 @@ impl PresentationState {
     }
 
     pub fn command_error(&self) -> Option<&str> {
-        self.command_error.as_deref()
+        match &self.command_outcome {
+            CommandOutcome::Failed(error) => Some(error.as_str()),
+            CommandOutcome::Pending | CommandOutcome::Succeeded => None,
+        }
     }
 
     /// @cc [owner:mixxorz,label:architecture] snapshot-version-ordering
     /// The first projector snapshot MAY have any version. Afterward, only a snapshot whose
     /// `state_version` is strictly newer than the accepted version may replace presentation state.
     pub fn accept_snapshot(&mut self, snapshot: AppViewState) -> bool {
-        let accepted = !self.has_snapshot || snapshot.state_version > self.snapshot.state_version;
-        self.has_snapshot = true;
+        let accepted = matches!(self.snapshot_phase, SnapshotPhase::Uninitialized)
+            || snapshot.state_version > self.snapshot.state_version;
+        self.snapshot_phase = SnapshotPhase::Initialized;
         if accepted {
             self.snapshot = snapshot;
         }
@@ -184,7 +242,7 @@ impl PresentationState {
     pub fn command_started(&mut self, command_id: u64) {
         if command_id > self.latest_command_id {
             self.latest_command_id = command_id;
-            self.command_error = None;
+            self.command_outcome = CommandOutcome::Pending;
         }
     }
 
@@ -195,7 +253,10 @@ impl PresentationState {
         if command_id != self.latest_command_id {
             return false;
         }
-        self.command_error = result.err();
+        self.command_outcome = match result {
+            Ok(()) => CommandOutcome::Succeeded,
+            Err(error) => CommandOutcome::Failed(error),
+        };
         true
     }
 
@@ -220,6 +281,100 @@ pub(super) fn session_display_name(show_file_name: &str) -> &str {
     show_file_name
         .rsplit_once('.')
         .map_or(show_file_name, |(stem, _)| stem)
+}
+
+/// An optimistic value stays local until its authoritative projection arrives.
+/// Successful command completion does not itself acknowledge the displayed value.
+#[derive(Clone, Debug, Default)]
+pub(super) enum ProjectedEdit<T> {
+    #[default]
+    Projected,
+    Submitting {
+        command_id: u64,
+        value: T,
+    },
+    AwaitingProjection {
+        command_id: u64,
+        value: T,
+    },
+}
+
+impl<T> ProjectedEdit<T> {
+    pub fn value(&self) -> Option<&T> {
+        match self {
+            Self::Projected => None,
+            Self::Submitting { value, .. } | Self::AwaitingProjection { value, .. } => Some(value),
+        }
+    }
+
+    pub fn submit(&mut self, command_id: u64, value: T) {
+        *self = Self::Submitting { command_id, value };
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::Projected;
+    }
+
+    /// Returns true only when the current edit failed and was discarded.
+    pub fn complete(&mut self, command_id: u64, failed: bool) -> bool {
+        let current = match self {
+            Self::Projected => return false,
+            Self::Submitting { command_id, .. } | Self::AwaitingProjection { command_id, .. } => {
+                *command_id
+            }
+        };
+        if current != command_id {
+            return false;
+        }
+        if failed {
+            self.clear();
+            return true;
+        }
+        *self = match std::mem::take(self) {
+            Self::Submitting { command_id, value } => {
+                Self::AwaitingProjection { command_id, value }
+            }
+            state => state,
+        };
+        false
+    }
+}
+
+/// Blur is deferred one frame; explicit edits invalidate that scheduled transition.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct DeferredCommit {
+    revision: u64,
+    phase: DeferredCommitPhase,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum DeferredCommitPhase {
+    #[default]
+    Editing,
+    Scheduled(u64),
+}
+
+impl DeferredCommit {
+    pub fn schedule(&mut self) -> u64 {
+        self.phase = DeferredCommitPhase::Scheduled(self.revision);
+        self.revision
+    }
+
+    pub fn take_scheduled(&mut self, revision: u64) -> bool {
+        if matches!(self.phase, DeferredCommitPhase::Scheduled(current) if current == revision)
+            && self.revision == revision
+        {
+            self.phase = DeferredCommitPhase::Editing;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.phase = DeferredCommitPhase::Editing;
+    }
 }
 
 #[cfg(test)]
@@ -348,5 +503,39 @@ mod tests {
             format_session_window_title("Show.ascs", false),
             "Advanced Show Control - Show"
         );
+    }
+}
+
+#[cfg(test)]
+mod edit_state_tests {
+    use super::{DeferredCommit, ProjectedEdit};
+
+    #[test]
+    fn optimistic_edit_waits_for_projection_and_ignores_old_failures() {
+        let mut edit = ProjectedEdit::default();
+        edit.submit(1, "first");
+        edit.submit(2, "second");
+        assert!(!edit.complete(1, true));
+        assert_eq!(edit.value(), Some(&"second"));
+        assert!(!edit.complete(2, false));
+        assert!(!edit.complete(2, false));
+        assert_eq!(edit.value(), Some(&"second"));
+        edit.clear();
+        assert!(!edit.complete(2, true));
+        assert!(edit.value().is_none());
+        edit.submit(3, "third");
+        assert!(edit.complete(3, true));
+        assert!(edit.value().is_none());
+    }
+
+    #[test]
+    fn explicit_edit_invalidates_blur_without_consuming_a_newer_blur() {
+        let mut commit = DeferredCommit::default();
+        let old = commit.schedule();
+        commit.cancel();
+        let new = commit.schedule();
+        assert!(!commit.take_scheduled(old));
+        assert!(commit.take_scheduled(new));
+        assert!(!commit.take_scheduled(new));
     }
 }

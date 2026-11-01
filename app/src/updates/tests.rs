@@ -53,7 +53,7 @@ impl Candidate for FakeCandidate {
         response.recv().unwrap();
         let launches = self.launches.clone();
         Ok(UpdateInstallPlan {
-            authority: None,
+            authority: super::InstallAuthority::Unbound,
             launch: Arc::new(move || {
                 launches.fetch_add(1, Ordering::SeqCst);
                 Ok(())

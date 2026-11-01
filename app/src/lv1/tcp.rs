@@ -46,6 +46,17 @@ pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpErr
 #[derive(Debug, Default)]
 pub struct FrameDecoder {
     buffer: Vec<u8>,
+    phase: DecodePhase,
+}
+
+#[derive(Debug, Default)]
+enum DecodePhase {
+    #[default]
+    Prefix,
+    Payload {
+        length: usize,
+        header: [u8; HEADER_LEN],
+    },
 }
 
 impl FrameDecoder {
@@ -58,33 +69,37 @@ impl FrameDecoder {
         let mut frames = Vec::new();
 
         loop {
-            if self.buffer.len() < 4 + HEADER_LEN {
-                break;
+            match self.phase {
+                DecodePhase::Prefix => {
+                    if self.buffer.len() < 4 + HEADER_LEN {
+                        break;
+                    }
+                    let length = u32::from_be_bytes(
+                        self.buffer[0..4]
+                            .try_into()
+                            .expect("four-byte length prefix"),
+                    ) as usize;
+                    if length == 0 || length > MAX_FRAME_PAYLOAD {
+                        return Err(Lv1TcpError::InvalidLength(length));
+                    }
+                    let mut header = [0_u8; HEADER_LEN];
+                    header.copy_from_slice(&self.buffer[4..12]);
+                    if header != DEFAULT_HEADER {
+                        return Err(Lv1TcpError::InvalidHeader(header));
+                    }
+                    self.phase = DecodePhase::Payload { length, header };
+                }
+                DecodePhase::Payload { length, header } => {
+                    let total_len = 4 + HEADER_LEN + length;
+                    if self.buffer.len() < total_len {
+                        break;
+                    }
+                    let payload = self.buffer[12..total_len].to_vec();
+                    self.buffer.drain(..total_len);
+                    frames.push(Lv1Frame { header, payload });
+                    self.phase = DecodePhase::Prefix;
+                }
             }
-
-            let payload_len = u32::from_be_bytes(
-                self.buffer[0..4]
-                    .try_into()
-                    .expect("frame length slice is exactly 4 bytes"),
-            ) as usize;
-            if payload_len == 0 || payload_len > MAX_FRAME_PAYLOAD {
-                return Err(Lv1TcpError::InvalidLength(payload_len));
-            }
-
-            let mut header = [0_u8; HEADER_LEN];
-            header.copy_from_slice(&self.buffer[4..12]);
-            if header != DEFAULT_HEADER {
-                return Err(Lv1TcpError::InvalidHeader(header));
-            }
-
-            let total_len = 4 + HEADER_LEN + payload_len;
-            if self.buffer.len() < total_len {
-                break;
-            }
-
-            let payload = self.buffer[12..total_len].to_vec();
-            self.buffer.drain(..total_len);
-            frames.push(Lv1Frame { header, payload });
         }
 
         Ok(frames)
@@ -167,9 +182,30 @@ pub fn pong_for_ping(msg: &OscMessage) -> Option<(&'static str, Vec<OscArg>)> {
     }
 }
 
+pub(crate) enum WriterOwnership {
+    Registration(tokio::net::tcp::OwnedWriteHalf),
+    Transferred,
+}
+
+impl WriterOwnership {
+    fn registration(&mut self) -> Option<&mut tokio::net::tcp::OwnedWriteHalf> {
+        match self {
+            Self::Registration(writer) => Some(writer),
+            Self::Transferred => None,
+        }
+    }
+
+    pub(crate) fn transfer(&mut self) -> tokio::net::tcp::OwnedWriteHalf {
+        match std::mem::replace(self, Self::Transferred) {
+            Self::Registration(writer) => writer,
+            Self::Transferred => panic!("LV1 writer was already transferred"),
+        }
+    }
+}
+
 pub struct Lv1TcpClient {
     pub(crate) reader: tokio::net::tcp::OwnedReadHalf,
-    pub(crate) writer: Option<tokio::net::tcp::OwnedWriteHalf>,
+    pub(crate) writer: WriterOwnership,
     pub(crate) decoder: FrameDecoder,
 }
 
@@ -180,13 +216,13 @@ impl Lv1TcpClient {
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader,
-            writer: Some(writer),
+            writer: WriterOwnership::Registration(writer),
             decoder: FrameDecoder::default(),
         })
     }
 
     pub async fn register_myfoh(&mut self, device_name: &str, uuid: &str) -> TcpResult<()> {
-        let writer = self.writer.as_mut().ok_or_else(|| {
+        let writer = self.writer.registration().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "LV1 TCP writer is not available",
@@ -198,7 +234,7 @@ impl Lv1TcpClient {
 
     pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
         let frame = encode_frame(address, args)?;
-        let writer = self.writer.as_mut().ok_or_else(|| {
+        let writer = self.writer.registration().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "LV1 TCP writer is not available",

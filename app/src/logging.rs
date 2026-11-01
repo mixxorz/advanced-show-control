@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicU8, Ordering},
 };
 use tokio::sync::broadcast;
 use tracing::{Event, Level, Subscriber};
@@ -43,23 +43,34 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
 
 #[derive(Clone)]
 pub struct DiagnosticFileGate {
-    extensive_diagnostics_enabled: Arc<AtomicBool>,
+    verbosity: Arc<AtomicU8>,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum DiagnosticVerbosity {
+    Normal,
+    Extensive,
 }
 
 impl DiagnosticFileGate {
     fn bootstrap_debug() -> Self {
         Self {
-            extensive_diagnostics_enabled: Arc::new(AtomicBool::new(true)),
+            verbosity: Arc::new(AtomicU8::new(DiagnosticVerbosity::Extensive as u8)),
         }
     }
 
     pub fn set_extensive_diagnostics_enabled(&self, enabled: bool) {
-        self.extensive_diagnostics_enabled
-            .store(enabled, Ordering::Relaxed);
+        let verbosity = if enabled {
+            DiagnosticVerbosity::Extensive
+        } else {
+            DiagnosticVerbosity::Normal
+        };
+        self.verbosity.store(verbosity as u8, Ordering::Relaxed);
     }
 
     fn min_level(&self) -> LevelFilter {
-        if self.extensive_diagnostics_enabled.load(Ordering::Relaxed) {
+        if self.verbosity.load(Ordering::Relaxed) == DiagnosticVerbosity::Extensive as u8 {
             LevelFilter::DEBUG
         } else {
             LevelFilter::INFO

@@ -102,6 +102,14 @@ enum PendingOperationResult<T> {
     CommandChannelClosed,
 }
 
+enum WriterPhase {
+    Receiving,
+    Writing(Vec<u8>),
+    Flushing(oneshot::Sender<Result<(), Lv1ActorError>>),
+    Failed,
+    Closed,
+}
+
 /// @cc [owner:mixxorz,label:safety;connection;error] writer-failure-fails-flushes
 /// A socket write or flush failure MUST fail every queued flush acknowledgement, signal transport
 /// failure, and stop the writer so callers cannot mistake queued bytes for delivered bytes.
@@ -110,31 +118,44 @@ async fn writer_task(
     mut rx: mpsc::Receiver<WriterMessage>,
     error_tx: mpsc::Sender<()>,
 ) {
-    while let Some(message) = rx.recv().await {
-        match message {
-            WriterMessage::Bytes(bytes) => {
-                if writer.write_all(&bytes).await.is_err() {
-                    fail_pending_writer_flushes(&mut rx);
-                    let _ = error_tx.try_send(());
-                    return;
+    let mut phase = WriterPhase::Receiving;
+    loop {
+        phase = match phase {
+            WriterPhase::Receiving => match rx.recv().await {
+                Some(WriterMessage::Bytes(bytes)) => WriterPhase::Writing(bytes),
+                Some(WriterMessage::Flush(reply)) => WriterPhase::Flushing(reply),
+                None => WriterPhase::Closed,
+            },
+            WriterPhase::Writing(bytes) => {
+                if writer.write_all(&bytes).await.is_ok() {
+                    WriterPhase::Receiving
+                } else {
+                    WriterPhase::Failed
                 }
             }
-            WriterMessage::Flush(reply) => {
+            WriterPhase::Flushing(reply) => {
                 let result = writer
                     .flush()
                     .await
                     .map_err(|_| Lv1ActorError::CommandSendFailed);
-                let failed = result.is_err();
-                if failed {
+                let next = if result.is_err() {
+                    // Fail queued barriers before acknowledging this failed flush.
                     fail_pending_writer_flushes(&mut rx);
                     let _ = error_tx.try_send(());
-                }
+                    WriterPhase::Closed
+                } else {
+                    WriterPhase::Receiving
+                };
                 let _ = reply.send(result);
-                if failed {
-                    return;
-                }
+                next
             }
-        }
+            WriterPhase::Failed => {
+                fail_pending_writer_flushes(&mut rx);
+                let _ = error_tx.try_send(());
+                WriterPhase::Closed
+            }
+            WriterPhase::Closed => return,
+        };
     }
 }
 
@@ -278,6 +299,15 @@ async fn wait_for_attempt_gate(gate: &Option<std::sync::Arc<tokio::sync::Notify>
     }
 }
 
+enum TransportPhase {
+    Connecting,
+    Registering(Lv1TcpClient),
+    Draining(Lv1TcpClient),
+    Connected(Lv1TcpClient),
+    RetryDelay(Option<Lv1TcpClient>),
+    Stopped,
+}
+
 /// @cc [owner:mixxorz,label:safety;state;connection] transport-session-scene-list-reset
 /// The scene-list mirror MUST be unknown before the first valid scene-list notification of each
 /// transport session. Disconnect MUST clear the prior session's list before disconnected state is
@@ -291,78 +321,77 @@ async fn run_actor(
     attempt_gates: AttemptGates,
 ) {
     let mut state = ActorState::new(event_bus, generation);
-
+    let mut phase = TransportPhase::Connecting;
     loop {
-        let mut client = loop {
-            let connect = async {
-                wait_for_attempt_gate(&attempt_gates.connect).await;
-                Lv1TcpClient::connect(&host, port).await
-            };
-            match await_pending_operation(connect, &state, &mut cmd_rx).await {
-                PendingOperationResult::Completed(Ok(client)) => break client,
-                PendingOperationResult::CommandChannelClosed => return,
-                PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
-                    if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-                        == DrainCommandsResult::CommandChannelClosed
-                    {
-                        return;
+        phase = match phase {
+            TransportPhase::Connecting => {
+                let connect = async {
+                    wait_for_attempt_gate(&attempt_gates.connect).await;
+                    Lv1TcpClient::connect(&host, port).await
+                };
+                match await_pending_operation(connect, &state, &mut cmd_rx).await {
+                    PendingOperationResult::Completed(Ok(client)) => {
+                        state.ping_sequence = 0;
+                        state.scene_observation_sequence = 0;
+                        TransportPhase::Registering(client)
                     }
+                    PendingOperationResult::CommandChannelClosed => TransportPhase::Stopped,
+                    PendingOperationResult::Completed(Err(_))
+                    | PendingOperationResult::TimedOut => TransportPhase::RetryDelay(None),
                 }
             }
-        };
-        state.ping_sequence = 0;
-        state.scene_observation_sequence = 0;
-
-        let uuid = uuid::Uuid::new_v4().to_string();
-        let registration = async {
-            wait_for_attempt_gate(&attempt_gates.registration).await;
-            client.register_myfoh(PRODUCTION_DEVICE_NAME, &uuid).await
-        };
-        match await_pending_operation(registration, &state, &mut cmd_rx).await {
-            PendingOperationResult::Completed(Ok(())) => {}
-            PendingOperationResult::CommandChannelClosed => return,
-            PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
-                if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-                    == DrainCommandsResult::CommandChannelClosed
-                {
-                    return;
+            TransportPhase::Registering(mut client) => {
+                let uuid = uuid::Uuid::new_v4().to_string();
+                let registration = async {
+                    wait_for_attempt_gate(&attempt_gates.registration).await;
+                    client.register_myfoh(PRODUCTION_DEVICE_NAME, &uuid).await
+                };
+                match await_pending_operation(registration, &state, &mut cmd_rx).await {
+                    PendingOperationResult::Completed(Ok(())) => TransportPhase::Draining(client),
+                    PendingOperationResult::CommandChannelClosed => TransportPhase::Stopped,
+                    PendingOperationResult::Completed(Err(_))
+                    | PendingOperationResult::TimedOut => TransportPhase::RetryDelay(Some(client)),
                 }
-                continue;
             }
-        }
-
-        state.connection = ConnectionStatus::Connected;
-        state.last_ping = Instant::now();
-
-        tokio::task::yield_now().await;
-        // Drain stale commands that arrived before connection completed.
-        // Flush replies Ok(()) here because the actor is now connected and ready to process.
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            drain_disconnected_command(cmd, &state, Ok(()));
-        }
-        state.fan_out(Lv1Event::Connected);
-
-        let disconnected = run_connected(&mut client, &mut state, &mut cmd_rx).await;
-
-        state.connection = ConnectionStatus::Disconnected;
-        state.scene = None;
-        state.scene_list = None;
-        state.channels.clear();
-        state.scene_buf = Default::default();
-        state.diagnose(format!("disconnected: {disconnected}"));
-        state.fan_out(Lv1Event::Disconnected {
-            reason: disconnected.to_string(),
-        });
-
-        if disconnected == DisconnectReason::CommandChannelClosed {
-            break;
-        }
-
-        if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-            == DrainCommandsResult::CommandChannelClosed
-        {
-            break;
-        }
+            TransportPhase::Draining(client) => {
+                state.connection = ConnectionStatus::Connected;
+                state.heartbeat.receive(Instant::now());
+                tokio::task::yield_now().await;
+                // Registered transport: all earlier commands are dispositioned before Connected.
+                while let Ok(cmd) = cmd_rx.try_recv() {
+                    drain_disconnected_command(cmd, &state, Ok(()));
+                }
+                state.fan_out(Lv1Event::Connected);
+                TransportPhase::Connected(client)
+            }
+            TransportPhase::Connected(mut client) => {
+                let disconnected = run_connected(&mut client, &mut state, &mut cmd_rx).await;
+                state.connection = ConnectionStatus::Disconnected;
+                state.scene = None;
+                state.scene_list = Default::default();
+                state.channels.clear();
+                state.scene_buf = Default::default();
+                state.diagnose(format!("disconnected: {disconnected}"));
+                state.fan_out(Lv1Event::Disconnected {
+                    reason: disconnected.to_string(),
+                });
+                if disconnected == DisconnectReason::CommandChannelClosed {
+                    TransportPhase::Stopped
+                } else {
+                    TransportPhase::RetryDelay(Some(client))
+                }
+            }
+            TransportPhase::RetryDelay(client) => {
+                // Keep the failed session owned through the delay, matching transport teardown order.
+                let outcome = drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
+                drop(client);
+                match outcome {
+                    DrainCommandsResult::TimedOut => TransportPhase::Connecting,
+                    DrainCommandsResult::CommandChannelClosed => TransportPhase::Stopped,
+                }
+            }
+            TransportPhase::Stopped => return,
+        };
     }
 }
 
@@ -402,27 +431,26 @@ async fn run_connected(
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
 ) -> DisconnectReason {
     let reader = &mut client.reader;
-    let writer = client
-        .writer
-        .take()
-        .expect("connected LV1 client has a writer before run_connected");
+    let writer = client.writer.transfer();
     let decoder = &mut client.decoder;
     let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
     let (writer_error_tx, mut writer_error_rx) = mpsc::channel(1);
     tokio::spawn(writer_task(writer, writer_rx, writer_error_tx));
 
     let ping_deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(
-        state.last_ping + PING_TIMEOUT,
+        state.heartbeat.deadline(PING_TIMEOUT),
     ));
     tokio::pin!(ping_deadline);
 
     loop {
-        if state.last_ping.elapsed() > PING_TIMEOUT {
+        if Instant::now() > state.heartbeat.deadline(PING_TIMEOUT) {
+            state.heartbeat.expire();
             return DisconnectReason::PingTimeout;
         }
 
         tokio::select! {
             _ = &mut ping_deadline => {
+                state.heartbeat.expire();
                 return DisconnectReason::PingTimeout;
             }
             maybe_error = writer_error_rx.recv() => {
@@ -452,8 +480,8 @@ async fn run_connected(
                                     state.fan_out(Lv1Event::PingReceived {
                                         sequence: state.ping_sequence,
                                     });
-                                    state.last_ping = Instant::now();
-                                    ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.last_ping + PING_TIMEOUT));
+                                    state.heartbeat.receive(Instant::now());
+                                    ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.heartbeat.deadline(PING_TIMEOUT)));
                                     continue;
                                 }
                                 handle_message(state, &msg);

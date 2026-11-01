@@ -14,11 +14,16 @@ use crate::updates::{UpdateInstallQueue, build_updates_actor};
 
 pub const APP_IDENTIFIER: &str = "com.advancedshowcontrol.app";
 
+enum ProjectionOwnership {
+    Available(ProjectionSubscription),
+    Installed,
+}
+
 pub struct NativeRuntime {
     runtime: Arc<tokio::runtime::Runtime>,
     commands: ApplicationCommandContext,
     lifecycle: AppLifecycle,
-    projections: Option<ProjectionSubscription>,
+    projections: ProjectionOwnership,
     _logging: LoggingRuntime,
     update_install_queue: UpdateInstallQueue,
     #[cfg(feature = "debug-tools")]
@@ -96,7 +101,7 @@ impl NativeRuntime {
             runtime,
             commands,
             lifecycle,
-            projections: Some(projections),
+            projections: ProjectionOwnership::Available(projections),
             _logging: logging,
             update_install_queue,
             #[cfg(feature = "debug-tools")]
@@ -118,9 +123,12 @@ impl NativeRuntime {
     }
 
     pub fn take_projections(&mut self) -> ProjectionSubscription {
-        self.projections
-            .take()
-            .expect("projection subscription may only be installed once")
+        match std::mem::replace(&mut self.projections, ProjectionOwnership::Installed) {
+            ProjectionOwnership::Available(subscription) => subscription,
+            ProjectionOwnership::Installed => {
+                panic!("projection subscription may only be installed once")
+            }
+        }
     }
 
     /// @cc [owner:mixxorz,label:safety] native-shutdown-invalidates-runtime

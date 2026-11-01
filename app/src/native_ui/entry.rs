@@ -15,6 +15,20 @@ use super::settings_view::SettingsView;
 use super::state::GoSubmissionGuard;
 use super::{AppRoot, CommandDispatcher, NativeRuntime, menu, theme, ui_event_channel};
 
+enum RuntimeOwnership {
+    Running(Box<NativeRuntime>),
+    Shutdown,
+}
+
+impl RuntimeOwnership {
+    fn take(&mut self) -> Option<NativeRuntime> {
+        match std::mem::replace(self, Self::Shutdown) {
+            Self::Running(runtime) => Some(*runtime),
+            Self::Shutdown => None,
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let mut runtime = NativeRuntime::build()?;
     let commands = runtime.commands();
@@ -22,7 +36,7 @@ pub fn run() -> Result<()> {
     let projections = runtime.take_projections();
     let (ui_events, ui_event_receiver) = ui_event_channel();
     let dispatcher = CommandDispatcher::new(runtime_handle, commands, ui_events);
-    let runtime = Rc::new(RefCell::new(Some(runtime)));
+    let runtime = Rc::new(RefCell::new(RuntimeOwnership::Running(Box::new(runtime))));
     let shutdown_runtime = runtime.clone();
     let startup_error = Rc::new(RefCell::new(None::<String>));
     let startup_error_for_app = startup_error.clone();

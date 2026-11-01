@@ -4,9 +4,34 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CueMarker {
     sequence: Vec<Option<Uuid>>,
-    pending_move: Option<(Uuid, Option<Uuid>)>,
-    pending_marker_move: Option<Uuid>,
-    pending_insert: Option<usize>,
+    movement: MarkerMovement,
+    marker_drop: MarkerDrop,
+    insertion: MarkerInsertion,
+}
+
+// Movement and insertion may be coalesced into one projection, so they are orthogonal.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum MarkerMovement {
+    #[default]
+    Synchronized,
+    AwaitingMove {
+        from: Uuid,
+        before: Option<Uuid>,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum MarkerDrop {
+    #[default]
+    Synchronized,
+    AwaitingDrop(Uuid),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum MarkerInsertion {
+    #[default]
+    Synchronized,
+    AwaitingInsert(usize),
 }
 
 impl CueMarker {
@@ -15,16 +40,16 @@ impl CueMarker {
         sequence.insert(index.min(sequence.len()), None);
         Self {
             sequence,
-            pending_move: None,
-            pending_marker_move: None,
-            pending_insert: None,
+            movement: MarkerMovement::Synchronized,
+            marker_drop: MarkerDrop::Synchronized,
+            insertion: MarkerInsertion::Synchronized,
         }
     }
 
     /// Record the dragged entry and the entry it will precede (`None` means append).
     /// This is intent, not an optimistic update: unchanged projections leave the marker alone.
     pub fn record_move(&mut self, from: Uuid, before: Option<Uuid>) {
-        self.pending_move = Some((from, before));
+        self.movement = MarkerMovement::AwaitingMove { from, before };
     }
 
     /// @cc [owner:mixxorz,label:product] insert-marker-drop-side
@@ -48,26 +73,26 @@ impl CueMarker {
             let marker = self.index();
             self.sequence.insert(marker, Some(from));
         } else {
-            self.pending_marker_move = Some(from);
+            self.marker_drop = MarkerDrop::AwaitingDrop(from);
         }
     }
 
     /// Record a scene drop at the real-cue gap. At the marker gap the new cue goes before it.
     pub fn record_insert(&mut self, index: usize) {
-        self.pending_insert = Some(index);
+        self.insertion = MarkerInsertion::AwaitingInsert(index);
     }
 
     pub fn is_pending(&self) -> bool {
-        self.pending_move.is_some()
-            || self.pending_marker_move.is_some()
-            || self.pending_insert.is_some()
+        self.movement != MarkerMovement::Synchronized
+            || self.marker_drop != MarkerDrop::Synchronized
+            || self.insertion != MarkerInsertion::Synchronized
     }
 
     /// Discard an intent when its command fails; no projected edit has been applied.
     pub fn clear_pending(&mut self) {
-        self.pending_move = None;
-        self.pending_marker_move = None;
-        self.pending_insert = None;
+        self.movement = MarkerMovement::Synchronized;
+        self.marker_drop = MarkerDrop::Synchronized;
+        self.insertion = MarkerInsertion::Synchronized;
     }
 
     pub fn reconcile(&mut self, ids: &[Uuid]) {
@@ -78,7 +103,7 @@ impl CueMarker {
         self.sequence
             .retain(|item| item.is_none_or(|id| ids.contains(&id)));
 
-        if let Some(from) = self.pending_marker_move.take() {
+        if let MarkerDrop::AwaitingDrop(from) = std::mem::take(&mut self.marker_drop) {
             let mut expected = previous.clone();
             expected.retain(|id| *id != from);
             let destination = self.sequence[..self.index()]
@@ -101,7 +126,7 @@ impl CueMarker {
             }
         }
 
-        if let Some((from, before)) = self.pending_move.take() {
+        if let MarkerMovement::AwaitingMove { from, before } = std::mem::take(&mut self.movement) {
             let mut expected = previous.clone();
             if let Some(position) = expected.iter().position(|id| *id == from) {
                 expected.remove(position);
@@ -133,10 +158,12 @@ impl CueMarker {
             .copied()
             .filter(|id| !previous.contains(id))
             .collect();
-        let insertion_matches = self
-            .pending_insert
-            .take()
-            .is_some_and(|index| added.len() == 1 && ids.get(index) == added.first());
+        let insertion_matches = match std::mem::take(&mut self.insertion) {
+            MarkerInsertion::AwaitingInsert(index) => {
+                added.len() == 1 && ids.get(index) == added.first()
+            }
+            MarkerInsertion::Synchronized => false,
+        };
         for (index, id) in ids.iter().enumerate() {
             if self.sequence.contains(&Some(*id)) {
                 continue;

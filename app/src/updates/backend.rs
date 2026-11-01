@@ -96,7 +96,7 @@ impl Candidate for VelopackCandidate {
         let manager = self.manager.clone();
         let info = self.info.clone();
         Ok(UpdateInstallPlan {
-            authority: None,
+            authority: super::InstallAuthority::Unbound,
             launch: Arc::new(move || {
                 manager
                     .wait_exit_then_apply_updates(info.clone(), false, true, Vec::<String>::new())

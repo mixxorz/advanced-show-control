@@ -6,10 +6,35 @@ use crate::runtime::events::{AppEvent, AppEventBus};
 pub(crate) struct CueLists {
     pub state: CueListsState,
     event_bus: AppEventBus,
-    pending_recall: Option<PendingRecall>,
-    current_entry_id: Option<uuid::Uuid>,
+    dispatch: CueDispatch,
+    playback: PlaybackCursor,
 }
 
+enum CueDispatch {
+    Idle,
+    AwaitingDispatch(PendingRecall),
+}
+impl CueDispatch {
+    fn finish(&mut self) -> Option<PendingRecall> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Idle => None,
+            Self::AwaitingDispatch(pending) => Some(pending),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum PlaybackCursor {
+    NotDispatched,
+    Current(uuid::Uuid),
+}
+impl PlaybackCursor {
+    fn entry(self) -> Option<uuid::Uuid> {
+        match self {
+            Self::NotDispatched => None,
+            Self::Current(id) => Some(id),
+        }
+    }
+}
 struct PendingRecall {
     entry_id: uuid::Uuid,
     reply: CueRecallReply,
@@ -23,15 +48,15 @@ impl CueLists {
         Self {
             state: CueListsState::default(),
             event_bus,
-            pending_recall: None,
-            current_entry_id: None,
+            dispatch: CueDispatch::Idle,
+            playback: PlaybackCursor::NotDispatched,
         }
     }
 
     pub fn projection_state(&self) -> CueListsProjectionState {
         CueListsProjectionState {
             document: self.state.document(),
-            current_cue_entry_id: self.current_entry_id,
+            current_cue_entry_id: self.playback.entry(),
         }
     }
 
@@ -41,11 +66,11 @@ impl CueLists {
         valid_scene_ids: impl IntoIterator<Item = uuid::Uuid>,
     ) {
         self.state.replace_document(document, valid_scene_ids);
-        self.current_entry_id = None;
+        self.playback = PlaybackCursor::NotDispatched;
     }
 
     pub fn recall_pending(&self) -> bool {
-        self.pending_recall.is_some()
+        matches!(self.dispatch, CueDispatch::AwaitingDispatch(_))
     }
 
     /// @cc [owner:mixxorz,label:safety;product] recall-start-requires-current-cue
@@ -64,7 +89,7 @@ impl CueLists {
             }
         };
         let (scene_reply, response) = oneshot::channel();
-        self.pending_recall = Some(PendingRecall {
+        self.dispatch = CueDispatch::AwaitingDispatch(PendingRecall {
             entry_id: entry.id,
             reply,
             response,
@@ -79,7 +104,7 @@ impl CueLists {
     /// Canceling a pending cue recall for session replacement MUST remove the pending operation and
     /// return `RecallCanceled` to its caller without advancing or otherwise editing the cue document.
     pub fn cancel_recall(&mut self) {
-        if let Some(pending) = self.pending_recall.take() {
+        if let Some(pending) = self.dispatch.finish() {
             let _ = pending.reply.send(Err(
                 crate::runtime::errors::AppCommandError::RecallCanceled(
                     "session was replaced".into(),
@@ -95,13 +120,13 @@ impl CueLists {
     /// NOT advance, replace the current cue, or publish a cue-list edit.
     pub async fn complete_recall(&mut self) {
         use crate::runtime::errors::AppCommandError;
-        let Some(pending) = &mut self.pending_recall else {
+        let CueDispatch::AwaitingDispatch(pending) = &mut self.dispatch else {
             return std::future::pending().await;
         };
         let result = (&mut pending.response)
             .await
             .unwrap_or(Err(AppCommandError::ReplyChannelClosed));
-        let pending = self.pending_recall.take().unwrap();
+        let pending = self.dispatch.finish().unwrap();
         let result = result.and_then(|_| {
             if self.state.document().cued_cue_entry_id != Some(pending.entry_id) {
                 return Err(AppCommandError::RecallCanceled("cued entry changed".into()));
@@ -110,7 +135,7 @@ impl CueLists {
                 .state
                 .advance_after_successful_recall()
                 .map_err(AppCommandError::CommandFailed)?;
-            self.current_entry_id = Some(entry.id);
+            self.playback = PlaybackCursor::Current(entry.id);
             self.publish();
             Ok(super::CueRecallResult {
                 recalled_entry_id: entry.id,
@@ -143,10 +168,11 @@ impl CueLists {
             );
         }
         if self
-            .current_entry_id
+            .playback
+            .entry()
             .is_some_and(|id| !self.state.active_entry_exists(id))
         {
-            self.current_entry_id = None;
+            self.playback = PlaybackCursor::NotDispatched;
         }
         if result.active_cue_list_cleared || result.cued_entry_cleared {
             self.publish();
@@ -289,10 +315,11 @@ impl CueLists {
         };
         if result.as_ref().is_ok_and(|result| result.changed) {
             if self
-                .current_entry_id
+                .playback
+                .entry()
                 .is_some_and(|id| !state.active_entry_exists(id))
             {
-                self.current_entry_id = None;
+                self.playback = PlaybackCursor::NotDispatched;
             }
             self.publish();
         }

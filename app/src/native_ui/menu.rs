@@ -112,9 +112,11 @@ struct SessionMenuPopover {
     on_open_change: Rc<OpenChange>,
 }
 
-#[derive(Default)]
-struct SessionMenuState {
-    menu: Option<Entity<PopupMenu>>,
+#[derive(Clone, Default)]
+enum SessionMenuState {
+    #[default]
+    Closed,
+    Open(Entity<PopupMenu>),
 }
 
 impl RenderOnce for SessionMenuPopover {
@@ -131,9 +133,9 @@ impl RenderOnce for SessionMenuPopover {
             .trigger_style(self.trigger_style)
             .on_open_change(move |open, window, cx| (self.on_open_change)(open, window, cx))
             .content(move |_, window, cx| {
-                let menu = match menu_state.read(cx).menu.clone() {
-                    Some(menu) => menu,
-                    None => {
+                let menu = match menu_state.read(cx).clone() {
+                    SessionMenuState::Open(menu) => menu,
+                    SessionMenuState::Closed => {
                         let action_context = action_context.clone();
                         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
                             menu.action_context(action_context)
@@ -147,7 +149,8 @@ impl RenderOnce for SessionMenuPopover {
                                 .menu("Software Updates…", Box::new(SoftwareUpdates))
                                 .menu("Quit", Box::new(Quit))
                         });
-                        menu_state.update(cx, |state, _| state.menu = Some(menu.clone()));
+                        menu_state
+                            .update(cx, |state, _| *state = SessionMenuState::Open(menu.clone()));
                         menu.focus_handle(cx).focus(window, cx);
 
                         let popover_state = cx.entity();
@@ -158,7 +161,8 @@ impl RenderOnce for SessionMenuPopover {
                                     popover_state.update(cx, |state, cx| {
                                         state.dismiss(window, cx);
                                     });
-                                    menu_state.update(cx, |state, _| state.menu = None);
+                                    menu_state
+                                        .update(cx, |state, _| *state = SessionMenuState::Closed);
                                 }
                             })
                             .detach();

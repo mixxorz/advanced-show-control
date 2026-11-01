@@ -14,6 +14,17 @@ pub(crate) struct Lv1Connection {
     generation: u64,
 }
 
+enum AdmissionPhase<'a> {
+    CheckGeneration,
+    ReserveCapacity,
+    Commit(Result<tokio::sync::mpsc::Permit<'a, Lv1Command>, Lv1ActorError>),
+}
+
+enum ReplyPhase<T> {
+    Awaiting(oneshot::Receiver<T>),
+    Validate(Result<T, AppCommandError>),
+}
+
 impl Lv1Connection {
     pub(crate) fn new(
         handle: Lv1ActorHandle,
@@ -85,20 +96,33 @@ impl Lv1Connection {
         command: Lv1Command,
         validate: impl FnOnce() -> Result<(), AppCommandError>,
     ) -> Result<(), AppCommandError> {
-        self.ensure_current().await?;
-        let permit = self.handle.reserve().await;
-        // Revocation wins even when the wait ended because the mailbox closed.
-        self.if_current(|| {
-            let permit = permit.map_err(|error| match error {
-                Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-                other => AppCommandError::CommandFailed(other.to_string()),
-            })?;
-            validate()?;
-            permit.send(command);
-            Ok(())
-        })
-        .await
-        .ok_or(AppCommandError::StaleGeneration)?
+        let mut phase = AdmissionPhase::CheckGeneration;
+        loop {
+            phase = match phase {
+                AdmissionPhase::CheckGeneration => {
+                    self.ensure_current().await?;
+                    AdmissionPhase::ReserveCapacity
+                }
+                AdmissionPhase::ReserveCapacity => {
+                    AdmissionPhase::Commit(self.handle.reserve().await)
+                }
+                AdmissionPhase::Commit(permit) => {
+                    // Revocation wins even when capacity waiting ended with mailbox closure.
+                    return self
+                        .if_current(|| {
+                            let permit = permit.map_err(|error| match error {
+                                Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                                other => AppCommandError::CommandFailed(other.to_string()),
+                            })?;
+                            validate()?;
+                            permit.send(command);
+                            Ok(())
+                        })
+                        .await
+                        .ok_or(AppCommandError::StaleGeneration)?;
+                }
+            };
+        }
     }
 
     pub(crate) async fn request<T>(
@@ -118,11 +142,20 @@ impl Lv1Connection {
     ) -> Result<T, AppCommandError> {
         let (reply, response) = oneshot::channel();
         self.send_checked(command(reply), validate).await?;
-        let result = response
-            .await
-            .map_err(|_| AppCommandError::ReplyChannelClosed);
-        self.ensure_current().await?;
-        result
+        let mut phase = ReplyPhase::Awaiting(response);
+        loop {
+            phase = match phase {
+                ReplyPhase::Awaiting(response) => ReplyPhase::Validate(
+                    response
+                        .await
+                        .map_err(|_| AppCommandError::ReplyChannelClosed),
+                ),
+                ReplyPhase::Validate(result) => {
+                    self.ensure_current().await?;
+                    return result;
+                }
+            };
+        }
     }
 }
 
