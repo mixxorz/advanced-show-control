@@ -289,8 +289,14 @@ pub(super) fn session_display_name(show_file_name: &str) -> &str {
 pub(super) enum ProjectedEdit<T> {
     #[default]
     Projected,
-    Submitting { command_id: u64, value: T },
-    AwaitingProjection { command_id: u64, value: T },
+    Submitting {
+        command_id: u64,
+        value: T,
+    },
+    AwaitingProjection {
+        command_id: u64,
+        value: T,
+    },
 }
 
 impl<T> ProjectedEdit<T> {
