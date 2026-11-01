@@ -208,11 +208,17 @@ impl ObservationSettle {
     }
 
     fn deadline(&self) -> Option<Instant> {
-        match self { Self::Idle => None, Self::Settling(observation) => Some(observation.settle_after) }
+        match self {
+            Self::Idle => None,
+            Self::Settling(observation) => Some(observation.settle_after),
+        }
     }
 
     fn take(&mut self) -> Option<PendingSceneObservation> {
-        match std::mem::take(self) { Self::Idle => None, Self::Settling(observation) => Some(observation) }
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Settling(observation) => Some(observation),
+        }
     }
 }
 
@@ -243,7 +249,9 @@ impl LateObservationState {
                 && entry.scene == observation.scene)
     }
 
-    fn retained(&self) -> bool { matches!(self, Self::Retained(_)) }
+    fn retained(&self) -> bool {
+        matches!(self, Self::Retained(_))
+    }
 }
 
 #[derive(Default)]
@@ -278,17 +286,22 @@ impl LateCanceledObservations {
         if self.entries.len() == LATE_CANCELED_OBSERVATION_CAPACITY {
             self.entries.pop_front();
         }
-        self.entries.push_back(LateObservationState::Retained(LateCanceledObservation {
-            generation,
-            dispatch_sequence,
-            scene,
-            expires_at: now + LATE_CANCELED_OBSERVATION_TTL,
-        }));
+        self.entries
+            .push_back(LateObservationState::Retained(LateCanceledObservation {
+                generation,
+                dispatch_sequence,
+                scene,
+                expires_at: now + LATE_CANCELED_OBSERVATION_TTL,
+            }));
     }
 
     fn suppresses(&mut self, observation: &PendingSceneObservation, now: Instant) -> bool {
         self.purge(now);
-        let Some(index) = self.entries.iter().position(|entry| entry.matches(observation)) else {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.matches(observation))
+        else {
             return false;
         };
         self.entries[index] = LateObservationState::Consumed;
@@ -338,9 +351,10 @@ impl RecallCoordinator {
         scene: SceneState,
         now: Instant,
     ) {
-        self.pending_observation.replace(PendingSceneObservation::new(
-            generation, sequence, scene, now,
-        ));
+        self.pending_observation
+            .replace(PendingSceneObservation::new(
+                generation, sequence, scene, now,
+            ));
     }
 
     pub fn pending_observation_deadline(&self) -> Option<Instant> {
@@ -1300,11 +1314,30 @@ mod tests {
     fn newer_observation_restarts_settle_and_is_consumed_once() {
         let now = Instant::now();
         let mut coordinator = RecallCoordinator::default();
-        coordinator.observe_scene(1, 10, SceneState { index: 1, name: "Intro".into() }, now);
+        coordinator.observe_scene(
+            1,
+            10,
+            SceneState {
+                index: 1,
+                name: "Intro".into(),
+            },
+            now,
+        );
         let later = now + Duration::from_millis(10);
-        coordinator.observe_scene(1, 11, SceneState { index: 2, name: "Verse".into() }, later);
+        coordinator.observe_scene(
+            1,
+            11,
+            SceneState {
+                index: 2,
+                name: "Verse".into(),
+            },
+            later,
+        );
 
-        assert_eq!(coordinator.pending_observation_deadline(), Some(later + SCENE_CHANGED_SETTLE_DELAY));
+        assert_eq!(
+            coordinator.pending_observation_deadline(),
+            Some(later + SCENE_CHANGED_SETTLE_DELAY)
+        );
         let observation = coordinator.take_pending_observation().unwrap();
         assert_eq!(observation.scene.index, 2);
         assert_eq!(observation.sequence, 11);
@@ -1314,7 +1347,10 @@ mod tests {
     #[test]
     fn late_observation_is_consumed_once_and_expires_at_the_boundary() {
         let now = Instant::now();
-        let scene = SceneState { index: 1, name: "Intro".into() };
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".into(),
+        };
         let observation = PendingSceneObservation::new(1, 11, scene.clone(), now);
         let mut canceled = LateCanceledObservations::default();
         canceled.record(1, 10, scene.clone(), now);

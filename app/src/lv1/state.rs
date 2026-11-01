@@ -138,7 +138,9 @@ impl ActorState {
             ping_sequence: 0,
             scene_observation_sequence: 0,
             scene_buf: SceneBuffer::default(),
-            heartbeat: Heartbeat::Awaiting { last_ping: Instant::now() },
+            heartbeat: Heartbeat::Awaiting {
+                last_ping: Instant::now(),
+            },
             event_bus,
         }
     }

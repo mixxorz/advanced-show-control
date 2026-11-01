@@ -261,7 +261,11 @@ impl Render for AppShell {
                                 let entity = cx.entity();
                                 move |open, _, cx| {
                                     entity.update(cx, |shell, cx| {
-                                        shell.session_menu = if *open { SessionMenuVisibility::Open } else { SessionMenuVisibility::Closed };
+                                        shell.session_menu = if *open {
+                                            SessionMenuVisibility::Open
+                                        } else {
+                                            SessionMenuVisibility::Closed
+                                        };
                                         cx.notify();
                                     });
                                 }

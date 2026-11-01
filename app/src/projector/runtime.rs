@@ -49,7 +49,8 @@ impl ProjectionSink {
     }
 
     fn publish(&self, snapshot: AppViewState) {
-        self.snapshots.send_replace(PublishedView::Ready(Box::new(snapshot)));
+        self.snapshots
+            .send_replace(PublishedView::Ready(Box::new(snapshot)));
     }
 }
 

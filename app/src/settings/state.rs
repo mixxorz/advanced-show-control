@@ -52,7 +52,8 @@ impl SettingsState {
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        StagedSettingsUpdate::prepare(&self.file_path, updated).map(|staged| SettingsPreparation::Staged(Box::new(staged)))
+        StagedSettingsUpdate::prepare(&self.file_path, updated)
+            .map(|staged| SettingsPreparation::Staged(Box::new(staged)))
     }
 
     pub fn last_connected_lv1(&self) -> Option<Lv1SystemIdentity> {
@@ -72,7 +73,8 @@ impl SettingsState {
 
         let mut updated = self.document.clone();
         updated.last_connected_lv1 = Some(identity);
-        StagedSettingsUpdate::prepare(&self.file_path, updated).map(|staged| SettingsPreparation::Staged(Box::new(staged)))
+        StagedSettingsUpdate::prepare(&self.file_path, updated)
+            .map(|staged| SettingsPreparation::Staged(Box::new(staged)))
     }
 
     /// @cc [owner:mixxorz,label:data-integrity] publish-settings-after-file

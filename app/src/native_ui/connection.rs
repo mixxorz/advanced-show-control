@@ -46,7 +46,10 @@ enum ConnectionRequest {
     #[default]
     Idle,
     Selecting(Lv1SystemIdentity),
-    Connecting { identity: Lv1SystemIdentity, command_id: u64 },
+    Connecting {
+        identity: Lv1SystemIdentity,
+        command_id: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -87,7 +90,8 @@ impl ConnectionState {
     pub fn pending_identity(&self) -> Option<&Lv1SystemIdentity> {
         match &self.request {
             ConnectionRequest::Idle => None,
-            ConnectionRequest::Selecting(identity) | ConnectionRequest::Connecting { identity, .. } => Some(identity),
+            ConnectionRequest::Selecting(identity)
+            | ConnectionRequest::Connecting { identity, .. } => Some(identity),
         }
     }
 
@@ -105,14 +109,19 @@ impl ConnectionState {
     }
 
     fn visible_latencies(&self) -> HashMap<String, LatencyState> {
-        self.probes.iter().filter_map(|(key, state)| {
-            let visible = match state {
-                ProbeState::VisiblePending { attempt_id } => LatencyState::Pending { attempt_id: *attempt_id },
-                ProbeState::HiddenPending { .. } => return None,
-                ProbeState::Complete(result) => result.clone(),
-            };
-            Some((key.clone(), visible))
-        }).collect()
+        self.probes
+            .iter()
+            .filter_map(|(key, state)| {
+                let visible = match state {
+                    ProbeState::VisiblePending { attempt_id } => LatencyState::Pending {
+                        attempt_id: *attempt_id,
+                    },
+                    ProbeState::HiddenPending { .. } => return None,
+                    ProbeState::Complete(result) => result.clone(),
+                };
+                Some((key.clone(), visible))
+            })
+            .collect()
     }
 
     pub fn close(&mut self) {
@@ -146,14 +155,18 @@ impl ConnectionState {
             return;
         }
         match self.probes.get(&key) {
-            Some(ProbeState::VisiblePending { attempt_id: current }) if *current == attempt_id => {
+            Some(ProbeState::VisiblePending {
+                attempt_id: current,
+            }) if *current == attempt_id => {
                 let result = match result {
                     Ok(result) => LatencyState::Success(result.tcp_connect_ms),
                     Err(error) => LatencyState::Error(error),
                 };
                 self.probes.insert(key, ProbeState::Complete(result));
             }
-            Some(ProbeState::HiddenPending { attempt_id: current }) if *current == attempt_id => {
+            Some(ProbeState::HiddenPending {
+                attempt_id: current,
+            }) if *current == attempt_id => {
                 self.probes.remove(&key);
             }
             _ => {}
@@ -161,21 +174,25 @@ impl ConnectionState {
     }
 
     pub fn begin_latency(&mut self, identity: &Lv1SystemIdentity) -> Option<(u64, u64)> {
-        if self.mode == ConnectionDialogMode::Closed { return None; }
+        if self.mode == ConnectionDialogMode::Closed {
+            return None;
+        }
         let key = identity_key(identity);
-        match self.probes.get_mut(&key) {
-            Some(state) => {
-                if let ProbeState::HiddenPending { attempt_id } = state {
-                    *state = ProbeState::VisiblePending { attempt_id: *attempt_id };
-                }
-                return None;
+        if let Some(state) = self.probes.get_mut(&key) {
+            if let ProbeState::HiddenPending { attempt_id } = state {
+                *state = ProbeState::VisiblePending {
+                    attempt_id: *attempt_id,
+                };
             }
-            None => {}
+            return None;
         }
         let attempt_id = self.next_latency_attempt_id;
-        self.next_latency_attempt_id = self.next_latency_attempt_id.checked_add(1)
+        self.next_latency_attempt_id = self
+            .next_latency_attempt_id
+            .checked_add(1)
             .expect("connection latency attempt identifier exhausted");
-        self.probes.insert(key, ProbeState::VisiblePending { attempt_id });
+        self.probes
+            .insert(key, ProbeState::VisiblePending { attempt_id });
         Some((self.latency_session_id, attempt_id))
     }
 
@@ -199,10 +216,14 @@ impl ConnectionState {
             .map(|system| identity_key(&system.identity))
             .collect::<HashSet<_>>();
         self.probes.retain(|identity, state| {
-            if discovered_keys.contains(identity) { return true; }
+            if discovered_keys.contains(identity) {
+                return true;
+            }
             match state {
                 ProbeState::VisiblePending { attempt_id } => {
-                    *state = ProbeState::HiddenPending { attempt_id: *attempt_id };
+                    *state = ProbeState::HiddenPending {
+                        attempt_id: *attempt_id,
+                    };
                     true
                 }
                 ProbeState::HiddenPending { .. } => true,
@@ -568,8 +589,13 @@ fn system_row(
                         commands.connect_lv1_system(identity).await.map(|_| ())
                     });
                     let mut state = select_state.borrow_mut();
-                    if let ConnectionRequest::Selecting(identity) = std::mem::take(&mut state.request) {
-                        state.request = ConnectionRequest::Connecting { identity, command_id };
+                    if let ConnectionRequest::Selecting(identity) =
+                        std::mem::take(&mut state.request)
+                    {
+                        state.request = ConnectionRequest::Connecting {
+                            identity,
+                            command_id,
+                        };
                     }
                     window.refresh();
                 })
@@ -832,7 +858,11 @@ mod tests {
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
 
-        assert!(!state.visible_latencies().contains_key(&identity_key(&removed)));
+        assert!(
+            !state
+                .visible_latencies()
+                .contains_key(&identity_key(&removed))
+        );
         assert_eq!(
             state.visible_latencies().get(&identity_key(&retained)),
             Some(&LatencyState::Pending {
@@ -858,7 +888,11 @@ mod tests {
         let probes = state.reconcile_latency_probes(&systems(true));
         let (session_id, attempt_id, _) = &probes[0];
         assert!(state.reconcile_latency_probes(&systems(false)).is_empty());
-        assert!(!state.visible_latencies().contains_key(&identity_key(&console)));
+        assert!(
+            !state
+                .visible_latencies()
+                .contains_key(&identity_key(&console))
+        );
         assert!(state.reconcile_latency_probes(&systems(true)).is_empty());
         assert_eq!(
             state.visible_latencies().get(&identity_key(&console)),
@@ -897,7 +931,11 @@ mod tests {
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
         );
-        assert!(!state.visible_latencies().contains_key(&identity_key(&console)));
+        assert!(
+            !state
+                .visible_latencies()
+                .contains_key(&identity_key(&console))
+        );
 
         let second = state.reconcile_latency_probes(&[system]);
         assert_eq!(second.len(), 1);

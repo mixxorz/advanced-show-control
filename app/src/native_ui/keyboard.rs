@@ -106,7 +106,10 @@ pub enum ShortcutCapture {
 
 impl ShortcutCapture {
     pub fn active_id(&self) -> Option<&str> {
-        match self { Self::Idle => None, Self::Recording(id) => Some(id.as_str()) }
+        match self {
+            Self::Idle => None,
+            Self::Recording(id) => Some(id.as_str()),
+        }
     }
 
     pub fn start(&mut self, id: impl Into<String>) {

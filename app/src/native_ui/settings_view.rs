@@ -10,11 +10,11 @@ use crate::projector::AppViewState;
 use crate::settings::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 use super::CommandDispatcher;
-use super::state::{DeferredCommit, ProjectedEdit};
 use super::clipped_overlay::vertical_scrollbar_overlay;
 use super::keyboard::{CaptureResult, ShortcutCapture, normalized_physical_key, shortcuts_equal};
 use super::numeric_control::editable_numeric_control;
 use super::panel::panel_header;
+use super::state::{DeferredCommit, ProjectedEdit};
 use super::theme::{
     ACCENT_ORANGE, CONSOLE_CONTROL, CONSOLE_CONTROL_HOVER, CONSOLE_LINE, CONSOLE_MUTED,
     CONSOLE_PANEL, CONSOLE_PRIMARY, STATUS_DANGER,
@@ -47,8 +47,14 @@ impl NumericSetting {
 enum ShortcutRecording {
     #[default]
     Idle,
-    Capturing { action: ShortcutAction, capture: ShortcutCapture },
-    Conflict { action: ShortcutAction, message: String },
+    Capturing {
+        action: ShortcutAction,
+        capture: ShortcutCapture,
+    },
+    Conflict {
+        action: ShortcutAction,
+        message: String,
+    },
 }
 
 pub struct SettingsView {
@@ -258,7 +264,10 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         if let Some(label) = shortcut_conflict_label(action, &shortcut, self.settings()) {
-            self.recording = ShortcutRecording::Conflict { action, message: format!("Already assigned to {label}") };
+            self.recording = ShortcutRecording::Conflict {
+                action,
+                message: format!("Already assigned to {label}"),
+            };
             return;
         }
         self.update(cx, |settings| match action {
@@ -500,7 +509,10 @@ impl SettingsView {
         };
         let capturing = matches!(self.recording, ShortcutRecording::Capturing { action: current, .. } if current == action);
         let conflict = match &self.recording {
-            ShortcutRecording::Conflict { action: current, message } if *current == action => Some(message.clone()),
+            ShortcutRecording::Conflict {
+                action: current,
+                message,
+            } if *current == action => Some(message.clone()),
             _ => None,
         };
         setting_row(

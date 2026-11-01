@@ -84,8 +84,7 @@ fn app_data_folder_name() -> &'static str {
 /// the reserved temporary backup.
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     let timestamp = crate::time::current_timestamp_millis();
-    let (candidate, staged_path, dest) =
-        reserve_unique_backup_file(backup_dir, path, &timestamp)?;
+    let (candidate, staged_path, dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
     let backup_result = (|| -> Result<(), String> {
         let mut phase = BackupPublication::Reserved(dest);
         loop {
@@ -95,10 +94,18 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
                         format!("Failed to open source session {}: {err}", path.display())
                     })?;
                     io::copy(&mut source, &mut dest).map_err(|err| {
-                        format!("Failed to create backup {} from {}: {err}", candidate.display(), path.display())
+                        format!(
+                            "Failed to create backup {} from {}: {err}",
+                            candidate.display(),
+                            path.display()
+                        )
                     })?;
                     dest.sync_all().map_err(|err| {
-                        format!("Failed to flush backup {} from {}: {err}", candidate.display(), path.display())
+                        format!(
+                            "Failed to flush backup {} from {}: {err}",
+                            candidate.display(),
+                            path.display()
+                        )
                     })?;
                     // Closing is part of the transition, before Windows publication.
                     drop(dest);
@@ -106,7 +113,11 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
                 }
                 BackupPublication::Synced => {
                     fs::rename(&staged_path, &candidate).map_err(|err| {
-                        format!("Failed to publish backup {} from {}: {err}", candidate.display(), staged_path.display())
+                        format!(
+                            "Failed to publish backup {} from {}: {err}",
+                            candidate.display(),
+                            staged_path.display()
+                        )
                     })?;
                     BackupPublication::Published
                 }
@@ -125,7 +136,11 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
 }
 
 // Publication cannot be reached while the reserved file handle is still open.
-enum BackupPublication { Reserved(fs::File), Synced, Published }
+enum BackupPublication {
+    Reserved(fs::File),
+    Synced,
+    Published,
+}
 
 fn prune_old_backups(
     backup_dir: &Path,

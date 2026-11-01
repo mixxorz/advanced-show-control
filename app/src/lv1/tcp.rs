@@ -53,7 +53,10 @@ pub struct FrameDecoder {
 enum DecodePhase {
     #[default]
     Prefix,
-    Payload { length: usize, header: [u8; HEADER_LEN] },
+    Payload {
+        length: usize,
+        header: [u8; HEADER_LEN],
+    },
 }
 
 impl FrameDecoder {
@@ -72,7 +75,9 @@ impl FrameDecoder {
                         break;
                     }
                     let length = u32::from_be_bytes(
-                        self.buffer[0..4].try_into().expect("four-byte length prefix"),
+                        self.buffer[0..4]
+                            .try_into()
+                            .expect("four-byte length prefix"),
                     ) as usize;
                     if length == 0 || length > MAX_FRAME_PAYLOAD {
                         return Err(Lv1TcpError::InvalidLength(length));

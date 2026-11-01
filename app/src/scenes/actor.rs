@@ -181,8 +181,12 @@ enum CommandStream {
 }
 
 impl CommandStream {
-    fn is_open(self) -> bool { matches!(self, Self::Open) }
-    fn close(&mut self) { *self = Self::Closed; }
+    fn is_open(self) -> bool {
+        matches!(self, Self::Open)
+    }
+    fn close(&mut self) {
+        *self = Self::Closed;
+    }
 }
 
 #[derive(Default)]
@@ -193,12 +197,20 @@ enum StoreState {
 }
 
 impl StoreState {
-    fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
+    fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
     fn fetching(&mut self) -> &mut PendingSnapshotOperation {
-        match self { Self::Fetching(operation) => operation, Self::Idle => unreachable!("store is idle") }
+        match self {
+            Self::Fetching(operation) => operation,
+            Self::Idle => unreachable!("store is idle"),
+        }
     }
     fn take(&mut self) -> Option<PendingSnapshotOperation> {
-        match std::mem::take(self) { Self::Idle => None, Self::Fetching(operation) => Some(operation) }
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Fetching(operation) => Some(operation),
+        }
     }
 }
 
@@ -210,12 +222,20 @@ enum LagRecoveryState {
 }
 
 impl LagRecoveryState {
-    fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
+    fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
     fn refreshing(&mut self) -> &mut PendingLagRecovery {
-        match self { Self::Refreshing(operation) => operation, Self::Idle => unreachable!("recovery is idle") }
+        match self {
+            Self::Refreshing(operation) => operation,
+            Self::Idle => unreachable!("recovery is idle"),
+        }
     }
     fn take(&mut self) -> Option<PendingLagRecovery> {
-        match std::mem::take(self) { Self::Idle => None, Self::Refreshing(operation) => Some(operation) }
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Refreshing(operation) => Some(operation),
+        }
     }
 }
 
@@ -227,9 +247,14 @@ enum SceneCommandLane {
 }
 
 impl SceneCommandLane {
-    fn is_ready(&self) -> bool { matches!(self, Self::Ready) }
+    fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
     fn take(&mut self) -> Option<ScenesCommand> {
-        match std::mem::take(self) { Self::Ready => None, Self::Deferred(command) => Some(command) }
+        match std::mem::take(self) {
+            Self::Ready => None,
+            Self::Deferred(command) => Some(command),
+        }
     }
 }
 
@@ -1172,18 +1197,39 @@ enum PendingRecallContext {
 }
 
 enum CompletedRecallOperation {
-    Admission { generation: u64, admission: PendingRecallAdmission, result: Result<Lv1StateSnapshot, AppCommandError> },
-    DispatchSnapshot { generation: u64, dispatch: PendingRecallDispatch, result: Result<Lv1StateSnapshot, AppCommandError> },
-    DispatchCommand { generation: u64, prepared: PreparedRecallDispatch, result: Result<RecallSceneDispatch, AppCommandError> },
-    ObservationSnapshot { generation: u64, prepared: PreparedSceneObservation, result: Result<Lv1StateSnapshot, AppCommandError> },
-    ObservationHandoff { generation: u64, completion: ObservationHandoffCompletion },
+    Admission {
+        generation: u64,
+        admission: PendingRecallAdmission,
+        result: Result<Lv1StateSnapshot, AppCommandError>,
+    },
+    DispatchSnapshot {
+        generation: u64,
+        dispatch: PendingRecallDispatch,
+        result: Result<Lv1StateSnapshot, AppCommandError>,
+    },
+    DispatchCommand {
+        generation: u64,
+        prepared: PreparedRecallDispatch,
+        result: Result<RecallSceneDispatch, AppCommandError>,
+    },
+    ObservationSnapshot {
+        generation: u64,
+        prepared: PreparedSceneObservation,
+        result: Result<Lv1StateSnapshot, AppCommandError>,
+    },
+    ObservationHandoff {
+        generation: u64,
+        completion: ObservationHandoffCompletion,
+    },
 }
 
 impl CompletedRecallOperation {
     fn generation(&self) -> u64 {
         match self {
-            Self::Admission { generation, .. } | Self::DispatchSnapshot { generation, .. }
-            | Self::DispatchCommand { generation, .. } | Self::ObservationSnapshot { generation, .. }
+            Self::Admission { generation, .. }
+            | Self::DispatchSnapshot { generation, .. }
+            | Self::DispatchCommand { generation, .. }
+            | Self::ObservationSnapshot { generation, .. }
             | Self::ObservationHandoff { generation, .. } => *generation,
         }
     }
@@ -1191,9 +1237,15 @@ impl CompletedRecallOperation {
     fn into_context(self) -> PendingRecallContext {
         match self {
             Self::Admission { admission, .. } => PendingRecallContext::Admission(admission),
-            Self::DispatchSnapshot { dispatch, .. } => PendingRecallContext::DispatchSnapshot(dispatch),
-            Self::DispatchCommand { prepared, .. } => PendingRecallContext::DispatchCommand(prepared),
-            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => PendingRecallContext::Observation,
+            Self::DispatchSnapshot { dispatch, .. } => {
+                PendingRecallContext::DispatchSnapshot(dispatch)
+            }
+            Self::DispatchCommand { prepared, .. } => {
+                PendingRecallContext::DispatchCommand(prepared)
+            }
+            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => {
+                PendingRecallContext::Observation
+            }
         }
     }
 }
@@ -1233,7 +1285,8 @@ enum PendingRecallOperation {
     },
 }
 
-type SnapshotFuture = Pin<Box<dyn Future<Output = Result<Lv1StateSnapshot, AppCommandError>> + Send>>;
+type SnapshotFuture =
+    Pin<Box<dyn Future<Output = Result<Lv1StateSnapshot, AppCommandError>> + Send>>;
 
 impl PendingRecallOperation {
     fn snapshot_for_admission(lv1: Lv1Connection, admission: PendingRecallAdmission) -> Self {
@@ -1268,31 +1321,85 @@ impl PendingRecallOperation {
     /// A completed wait consumes its phase token and returns the matching typed transition.
     /// Poll cancellation before completion leaves the pending operation and its token untouched.
     async fn complete(pending: &mut Option<Self>) -> CompletedRecallOperation {
-        match pending.as_mut().expect("enabled recall branch has an operation") {
+        match pending
+            .as_mut()
+            .expect("enabled recall branch has an operation")
+        {
             Self::Admission { future, .. } => {
                 let result = future.as_mut().await;
-                let Self::Admission { generation, admission, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
-                CompletedRecallOperation::Admission { generation, admission, result }
+                let Self::Admission {
+                    generation,
+                    admission,
+                    ..
+                } = pending.take().expect("completed recall exists")
+                else {
+                    unreachable!("recall phase cannot change while polled")
+                };
+                CompletedRecallOperation::Admission {
+                    generation,
+                    admission,
+                    result,
+                }
             }
             Self::DispatchSnapshot { future, .. } => {
                 let result = future.as_mut().await;
-                let Self::DispatchSnapshot { generation, dispatch, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
-                CompletedRecallOperation::DispatchSnapshot { generation, dispatch, result }
+                let Self::DispatchSnapshot {
+                    generation,
+                    dispatch,
+                    ..
+                } = pending.take().expect("completed recall exists")
+                else {
+                    unreachable!("recall phase cannot change while polled")
+                };
+                CompletedRecallOperation::DispatchSnapshot {
+                    generation,
+                    dispatch,
+                    result,
+                }
             }
             Self::DispatchCommand { future, .. } => {
                 let result = future.as_mut().await;
-                let Self::DispatchCommand { generation, prepared, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
-                CompletedRecallOperation::DispatchCommand { generation, prepared, result }
+                let Self::DispatchCommand {
+                    generation,
+                    prepared,
+                    ..
+                } = pending.take().expect("completed recall exists")
+                else {
+                    unreachable!("recall phase cannot change while polled")
+                };
+                CompletedRecallOperation::DispatchCommand {
+                    generation,
+                    prepared,
+                    result,
+                }
             }
             Self::ObservationSnapshot { future, .. } => {
                 let result = future.as_mut().await;
-                let Self::ObservationSnapshot { generation, prepared, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
-                CompletedRecallOperation::ObservationSnapshot { generation, prepared, result }
+                let Self::ObservationSnapshot {
+                    generation,
+                    prepared,
+                    ..
+                } = pending.take().expect("completed recall exists")
+                else {
+                    unreachable!("recall phase cannot change while polled")
+                };
+                CompletedRecallOperation::ObservationSnapshot {
+                    generation,
+                    prepared,
+                    result,
+                }
             }
             Self::ObservationHandoff { future, .. } => {
                 let completion = future.as_mut().await;
-                let Self::ObservationHandoff { generation, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
-                CompletedRecallOperation::ObservationHandoff { generation, completion }
+                let Self::ObservationHandoff { generation, .. } =
+                    pending.take().expect("completed recall exists")
+                else {
+                    unreachable!("recall phase cannot change while polled")
+                };
+                CompletedRecallOperation::ObservationHandoff {
+                    generation,
+                    completion,
+                }
             }
         }
     }
@@ -1300,9 +1407,15 @@ impl PendingRecallOperation {
     fn into_context(self) -> PendingRecallContext {
         match self {
             Self::Admission { admission, .. } => PendingRecallContext::Admission(admission),
-            Self::DispatchSnapshot { dispatch, .. } => PendingRecallContext::DispatchSnapshot(dispatch),
-            Self::DispatchCommand { prepared, .. } => PendingRecallContext::DispatchCommand(prepared),
-            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => PendingRecallContext::Observation,
+            Self::DispatchSnapshot { dispatch, .. } => {
+                PendingRecallContext::DispatchSnapshot(dispatch)
+            }
+            Self::DispatchCommand { prepared, .. } => {
+                PendingRecallContext::DispatchCommand(prepared)
+            }
+            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => {
+                PendingRecallContext::Observation
+            }
         }
     }
 
@@ -1317,29 +1430,28 @@ impl PendingRecallOperation {
             generation,
             prepared,
             future: Box::pin(async move {
-                lv1
-                    .request_checked(
-                        |reply| Lv1Command::RecallScene {
-                            scene_index,
-                            reply: Some(reply),
-                        },
-                        || {
-                            if lockout.current() {
-                                Err(AppCommandError::RecallCanceled(
-                                    "lockout was enabled".to_string(),
-                                ))
-                            } else {
-                                Ok(())
-                            }
-                        },
-                    )
-                    .await
-                    .and_then(|result| {
-                        result.map_err(|error| match error {
-                            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-                            other => AppCommandError::CommandFailed(other.to_string()),
-                        })
+                lv1.request_checked(
+                    |reply| Lv1Command::RecallScene {
+                        scene_index,
+                        reply: Some(reply),
+                    },
+                    || {
+                        if lockout.current() {
+                            Err(AppCommandError::RecallCanceled(
+                                "lockout was enabled".to_string(),
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+                .and_then(|result| {
+                    result.map_err(|error| match error {
+                        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                        other => AppCommandError::CommandFailed(other.to_string()),
                     })
+                })
             }),
         }
     }
@@ -1351,9 +1463,9 @@ impl PendingRecallOperation {
         Self::ObservationSnapshot {
             generation,
             prepared,
-            future: Box::pin(async move {
-                fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await
-            }),
+            future: Box::pin(
+                async move { fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await },
+            ),
         }
     }
 
@@ -1463,7 +1575,10 @@ fn start_next_recall_dispatch(
         coordinator.cancel_pending_dispatch(dispatch, "LV1 state is unavailable");
         return None;
     };
-    Some(PendingRecallOperation::snapshot_for_dispatch(handles.lv1, dispatch))
+    Some(PendingRecallOperation::snapshot_for_dispatch(
+        handles.lv1,
+        dispatch,
+    ))
 }
 
 fn cancel_pending_recall(
@@ -1530,7 +1645,11 @@ async fn finish_pending_recall(
     }
 
     match operation {
-        CompletedRecallOperation::Admission { admission, result: Ok(snapshot), .. } => {
+        CompletedRecallOperation::Admission {
+            admission,
+            result: Ok(snapshot),
+            ..
+        } => {
             if coordinator.finish_admission(
                 admission,
                 lockout,
@@ -1540,12 +1659,20 @@ async fn finish_pending_recall(
                 *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
             }
         }
-        CompletedRecallOperation::Admission { admission, result: Err(error), .. } => {
+        CompletedRecallOperation::Admission {
+            admission,
+            result: Err(error),
+            ..
+        } => {
             if coordinator.fail_admission(admission, error) {
                 *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
             }
         }
-        CompletedRecallOperation::DispatchSnapshot { dispatch, result: Ok(snapshot), .. } => {
+        CompletedRecallOperation::DispatchSnapshot {
+            dispatch,
+            result: Ok(snapshot),
+            ..
+        } => {
             match coordinator.prepare_dispatch(
                 dispatch,
                 active_generation,
@@ -1568,7 +1695,11 @@ async fn finish_pending_recall(
                 }
             }
         }
-        CompletedRecallOperation::DispatchSnapshot { dispatch, result: Err(error), .. } => {
+        CompletedRecallOperation::DispatchSnapshot {
+            dispatch,
+            result: Err(error),
+            ..
+        } => {
             let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
                 ("LV1 connection generation changed", true)
             } else {
@@ -1579,10 +1710,14 @@ async fn finish_pending_recall(
                 coordinator.clear_late_observations();
             }
         }
-        CompletedRecallOperation::DispatchCommand { prepared, result, .. } => {
+        CompletedRecallOperation::DispatchCommand {
+            prepared, result, ..
+        } => {
             coordinator.finish_dispatch(prepared, result);
         }
-        CompletedRecallOperation::ObservationSnapshot { prepared, result, .. } => {
+        CompletedRecallOperation::ObservationSnapshot {
+            prepared, result, ..
+        } => {
             let handles = peers
                 .handles(active_generation)
                 .expect("current recall peers were checked");

@@ -10,18 +10,30 @@ pub(crate) struct CueLists {
     playback: PlaybackCursor,
 }
 
-enum CueDispatch { Idle, AwaitingDispatch(PendingRecall) }
+enum CueDispatch {
+    Idle,
+    AwaitingDispatch(PendingRecall),
+}
 impl CueDispatch {
     fn finish(&mut self) -> Option<PendingRecall> {
         match std::mem::replace(self, Self::Idle) {
-            Self::Idle => None, Self::AwaitingDispatch(pending) => Some(pending),
+            Self::Idle => None,
+            Self::AwaitingDispatch(pending) => Some(pending),
         }
     }
 }
 #[derive(Clone, Copy)]
-enum PlaybackCursor { NotDispatched, Current(uuid::Uuid) }
+enum PlaybackCursor {
+    NotDispatched,
+    Current(uuid::Uuid),
+}
 impl PlaybackCursor {
-    fn entry(self) -> Option<uuid::Uuid> { match self { Self::NotDispatched => None, Self::Current(id) => Some(id) } }
+    fn entry(self) -> Option<uuid::Uuid> {
+        match self {
+            Self::NotDispatched => None,
+            Self::Current(id) => Some(id),
+        }
+    }
 }
 struct PendingRecall {
     entry_id: uuid::Uuid,
@@ -156,7 +168,8 @@ impl CueLists {
             );
         }
         if self
-            .playback.entry()
+            .playback
+            .entry()
             .is_some_and(|id| !self.state.active_entry_exists(id))
         {
             self.playback = PlaybackCursor::NotDispatched;
@@ -302,7 +315,8 @@ impl CueLists {
         };
         if result.as_ref().is_ok_and(|result| result.changed) {
             if self
-                .playback.entry()
+                .playback
+                .entry()
                 .is_some_and(|id| !state.active_entry_exists(id))
             {
                 self.playback = PlaybackCursor::NotDispatched;

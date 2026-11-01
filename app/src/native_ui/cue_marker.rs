@@ -14,7 +14,10 @@ pub(super) struct CueMarker {
 enum MarkerMovement {
     #[default]
     Synchronized,
-    AwaitingMove { from: Uuid, before: Option<Uuid> },
+    AwaitingMove {
+        from: Uuid,
+        before: Option<Uuid>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -156,7 +159,9 @@ impl CueMarker {
             .filter(|id| !previous.contains(id))
             .collect();
         let insertion_matches = match std::mem::take(&mut self.insertion) {
-            MarkerInsertion::AwaitingInsert(index) => added.len() == 1 && ids.get(index) == added.first(),
+            MarkerInsertion::AwaitingInsert(index) => {
+                added.len() == 1 && ids.get(index) == added.first()
+            }
             MarkerInsertion::Synchronized => false,
         };
         for (index, id) in ids.iter().enumerate() {

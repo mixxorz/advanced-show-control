@@ -125,7 +125,9 @@ impl NativeRuntime {
     pub fn take_projections(&mut self) -> ProjectionSubscription {
         match std::mem::replace(&mut self.projections, ProjectionOwnership::Installed) {
             ProjectionOwnership::Available(subscription) => subscription,
-            ProjectionOwnership::Installed => panic!("projection subscription may only be installed once"),
+            ProjectionOwnership::Installed => {
+                panic!("projection subscription may only be installed once")
+            }
         }
     }
 

@@ -136,7 +136,9 @@ async fn handle_command(
                     .map_err(|error| format!("Settings preparation task failed: {error}"))
                     .and_then(|result| result);
             let result = match staged {
-                Ok(SettingsPreparation::Staged(staged)) => state.publish_staged(*staged).map(|()| true),
+                Ok(SettingsPreparation::Staged(staged)) => {
+                    state.publish_staged(*staged).map(|()| true)
+                }
                 Ok(SettingsPreparation::Unchanged) => Ok(false),
                 Err(error) => Err(error),
             };

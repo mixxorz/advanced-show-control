@@ -117,8 +117,13 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
     let mut buf = [0_u8; 65_536];
     loop {
         window = match window {
-            DiscoveryWindow::Listening { deadline, mut found } => {
-                let Some(read_timeout) = read_timeout_for(deadline.saturating_duration_since(Instant::now())) else {
+            DiscoveryWindow::Listening {
+                deadline,
+                mut found,
+            } => {
+                let Some(read_timeout) =
+                    read_timeout_for(deadline.saturating_duration_since(Instant::now()))
+                else {
                     window = DiscoveryWindow::Complete(found.into_values().collect());
                     continue;
                 };
@@ -126,13 +131,18 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
                 match socket.recv_from(&mut buf) {
                     Ok((size, source)) => {
                         if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
-                            && entry_matches(&entry, &options.filter_service, options.filter_host_ip.as_deref())
+                            && entry_matches(
+                                &entry,
+                                &options.filter_service,
+                                options.filter_host_ip.as_deref(),
+                            )
                         {
                             found.entry(dedupe_key(&entry)).or_insert(entry);
                         }
                     }
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            || err.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(err) => return Err(err),
                 }
                 DiscoveryWindow::Listening { deadline, found }

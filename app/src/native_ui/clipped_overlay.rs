@@ -94,12 +94,7 @@ impl Element for ClippedOverlay {
     ) {
         let mask = window.content_mask();
         self.mask.set(Some(mask));
-        window.defer_draw(
-            self.child.defer(),
-            window.element_offset(),
-            0,
-            Some(mask),
-        );
+        window.defer_draw(self.child.defer(), window.element_offset(), 0, Some(mask));
     }
 
     fn paint(

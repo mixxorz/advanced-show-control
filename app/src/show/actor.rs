@@ -221,8 +221,14 @@ async fn run_show_actor(
                 }
             }
         } else if matches!(mailbox, CommandAdmission::Deferred(_)) {
-            let CommandAdmission::Deferred(command) = std::mem::replace(&mut mailbox, CommandAdmission::Accepting) else { unreachable!() };
-            execution = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await.into();
+            let CommandAdmission::Deferred(command) =
+                std::mem::replace(&mut mailbox, CommandAdmission::Accepting)
+            else {
+                unreachable!()
+            };
+            execution = handle_command(command, &mut state, &event_bus, &peers, &backup_dir)
+                .await
+                .into();
             publish_lockout_if_changed(&lockout_tx, &state);
         } else {
             tokio::select! {
@@ -315,7 +321,10 @@ enum ShowExecution {
 }
 impl From<Option<PendingShowOperation>> for ShowExecution {
     fn from(operation: Option<PendingShowOperation>) -> Self {
-        match operation { Some(operation) => Self::Running(operation), None => Self::Idle }
+        match operation {
+            Some(operation) => Self::Running(operation),
+            None => Self::Idle,
+        }
     }
 }
 enum CommandAdmission {
@@ -324,10 +333,15 @@ enum CommandAdmission {
     Drained,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ObservedEdits { Clean, Dirty }
+enum ObservedEdits {
+    Clean,
+    Dirty,
+}
 impl ObservedEdits {
     fn observe(&mut self, dirty: bool) {
-        if dirty { *self = Self::Dirty; }
+        if dirty {
+            *self = Self::Dirty;
+        }
     }
 }
 
@@ -970,7 +984,10 @@ impl ValidatedSession {
         expected: &Lv1StateSnapshot,
     ) -> Result<Self, String> {
         validate_lv1_snapshot(peers, generation, expected).await?;
-        Ok(Self { document, generation })
+        Ok(Self {
+            document,
+            generation,
+        })
     }
     async fn commit(self, peers: &ShowActorPeers) -> Result<SessionDocument, String> {
         replace_session_document(peers, self.document, self.generation).await

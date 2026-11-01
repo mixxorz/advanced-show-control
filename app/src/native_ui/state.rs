@@ -285,15 +285,12 @@ pub(super) fn session_display_name(show_file_name: &str) -> &str {
 
 /// An optimistic value stays local until its authoritative projection arrives.
 /// Successful command completion does not itself acknowledge the displayed value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) enum ProjectedEdit<T> {
+    #[default]
     Projected,
     Submitting { command_id: u64, value: T },
     AwaitingProjection { command_id: u64, value: T },
-}
-
-impl<T> Default for ProjectedEdit<T> {
-    fn default() -> Self { Self::Projected }
 }
 
 impl<T> ProjectedEdit<T> {
@@ -308,18 +305,29 @@ impl<T> ProjectedEdit<T> {
         *self = Self::Submitting { command_id, value };
     }
 
-    pub fn clear(&mut self) { *self = Self::Projected; }
+    pub fn clear(&mut self) {
+        *self = Self::Projected;
+    }
 
     /// Returns true only when the current edit failed and was discarded.
     pub fn complete(&mut self, command_id: u64, failed: bool) -> bool {
         let current = match self {
             Self::Projected => return false,
-            Self::Submitting { command_id, .. } | Self::AwaitingProjection { command_id, .. } => *command_id,
+            Self::Submitting { command_id, .. } | Self::AwaitingProjection { command_id, .. } => {
+                *command_id
+            }
         };
-        if current != command_id { return false; }
-        if failed { self.clear(); return true; }
+        if current != command_id {
+            return false;
+        }
+        if failed {
+            self.clear();
+            return true;
+        }
         *self = match std::mem::take(self) {
-            Self::Submitting { command_id, value } => Self::AwaitingProjection { command_id, value },
+            Self::Submitting { command_id, value } => {
+                Self::AwaitingProjection { command_id, value }
+            }
             state => state,
         };
         false
@@ -352,7 +360,9 @@ impl DeferredCommit {
         {
             self.phase = DeferredCommitPhase::Editing;
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     pub fn cancel(&mut self) {

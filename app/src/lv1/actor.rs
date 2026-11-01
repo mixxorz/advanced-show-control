@@ -134,7 +134,10 @@ async fn writer_task(
                 }
             }
             WriterPhase::Flushing(reply) => {
-                let result = writer.flush().await.map_err(|_| Lv1ActorError::CommandSendFailed);
+                let result = writer
+                    .flush()
+                    .await
+                    .map_err(|_| Lv1ActorError::CommandSendFailed);
                 let next = if result.is_err() {
                     // Fail queued barriers before acknowledging this failed flush.
                     fail_pending_writer_flushes(&mut rx);
@@ -333,9 +336,8 @@ async fn run_actor(
                         TransportPhase::Registering(client)
                     }
                     PendingOperationResult::CommandChannelClosed => TransportPhase::Stopped,
-                    PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
-                        TransportPhase::RetryDelay(None)
-                    }
+                    PendingOperationResult::Completed(Err(_))
+                    | PendingOperationResult::TimedOut => TransportPhase::RetryDelay(None),
                 }
             }
             TransportPhase::Registering(mut client) => {
@@ -347,9 +349,8 @@ async fn run_actor(
                 match await_pending_operation(registration, &state, &mut cmd_rx).await {
                     PendingOperationResult::Completed(Ok(())) => TransportPhase::Draining(client),
                     PendingOperationResult::CommandChannelClosed => TransportPhase::Stopped,
-                    PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
-                        TransportPhase::RetryDelay(Some(client))
-                    }
+                    PendingOperationResult::Completed(Err(_))
+                    | PendingOperationResult::TimedOut => TransportPhase::RetryDelay(Some(client)),
                 }
             }
             TransportPhase::Draining(client) => {
@@ -371,7 +372,9 @@ async fn run_actor(
                 state.channels.clear();
                 state.scene_buf = Default::default();
                 state.diagnose(format!("disconnected: {disconnected}"));
-                state.fan_out(Lv1Event::Disconnected { reason: disconnected.to_string() });
+                state.fan_out(Lv1Event::Disconnected {
+                    reason: disconnected.to_string(),
+                });
                 if disconnected == DisconnectReason::CommandChannelClosed {
                     TransportPhase::Stopped
                 } else {

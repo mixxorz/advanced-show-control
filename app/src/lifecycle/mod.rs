@@ -51,15 +51,25 @@ struct BuiltConnectedRuntime {
 struct InstalledCandidate(BuiltConnectedRuntime);
 
 impl BuiltConnectedRuntime {
-    async fn install(self, lifecycle: &AppLifecycle) -> Result<InstalledCandidate, InstalledRuntime> {
-        lifecycle.install_runtime_transaction(self.runtime.clone()).await?;
+    async fn install(
+        self,
+        lifecycle: &AppLifecycle,
+    ) -> Result<InstalledCandidate, InstalledRuntime> {
+        lifecycle
+            .install_runtime_transaction(self.runtime.clone())
+            .await?;
         Ok(InstalledCandidate(self))
     }
 }
 
 impl InstalledCandidate {
     fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
-        let BuiltConnectedRuntime { runtime, lv1_task, fade_task, lv1_events } = self.0;
+        let BuiltConnectedRuntime {
+            runtime,
+            lv1_task,
+            fade_task,
+            lv1_events,
+        } = self.0;
         lv1_task.spawn();
         fade_task.spawn();
         StartedConnectedRuntime {
@@ -141,8 +151,12 @@ enum AcceptancePhase {
         snapshot: crate::lv1::Lv1StateSnapshot,
         changed: bool,
     },
-    RememberIdentity { changed: bool },
-    Confirm { changed: bool },
+    RememberIdentity {
+        changed: bool,
+    },
+    Confirm {
+        changed: bool,
+    },
 }
 
 enum DisconnectPhase {
@@ -545,7 +559,10 @@ impl AppLifecycle {
                         self.abort_rejected_connection_transaction(runtime).await;
                         return Err("LV1 connection was superseded".to_string());
                     }
-                    AcceptancePhase::ScenePeers { snapshot, changed: completion.changed }
+                    AcceptancePhase::ScenePeers {
+                        snapshot,
+                        changed: completion.changed,
+                    }
                 }
                 AcceptancePhase::ScenePeers { snapshot, changed } => {
                     if !self.install_accepted_scene_peers(generation).await {
@@ -553,11 +570,14 @@ impl AppLifecycle {
                         return Err("generation is stale".to_string());
                     }
                     let (reply, response) = tokio::sync::oneshot::channel();
-                    let sent = self.scenes.send(crate::scenes::ScenesCommand::RuntimePeersReady {
-                        generation,
-                        initial_scene_list: snapshot.scene_list,
-                        reply,
-                    }).await;
+                    let sent = self
+                        .scenes
+                        .send(crate::scenes::ScenesCommand::RuntimePeersReady {
+                            generation,
+                            initial_scene_list: snapshot.scene_list,
+                            reply,
+                        })
+                        .await;
                     if !matches!(sent, Ok(()) if matches!(response.await, Ok(Ok(())))) {
                         self.abort_rejected_connection_transaction(runtime).await;
                         return Err("scene actor is unavailable".to_string());
@@ -565,8 +585,12 @@ impl AppLifecycle {
                     AcceptancePhase::RememberIdentity { changed }
                 }
                 AcceptancePhase::RememberIdentity { changed } => {
-                    if let Err(error) = self.remember_last_connected_lv1(generation, identity.clone()).await {
-                        self.log_last_connected_lv1_save_failure(generation, error).await;
+                    if let Err(error) = self
+                        .remember_last_connected_lv1(generation, identity.clone())
+                        .await
+                    {
+                        self.log_last_connected_lv1_save_failure(generation, error)
+                            .await;
                     }
                     AcceptancePhase::Confirm { changed }
                 }
@@ -683,7 +707,9 @@ impl AppLifecycle {
         loop {
             phase = match phase {
                 DisconnectPhase::ClearMetadata => {
-                    let cleared = self.set_lv1_connection_metadata(generation, None).await
+                    let cleared = self
+                        .set_lv1_connection_metadata(generation, None)
+                        .await
                         .map_err(|error| error.to_string())?;
                     if !cleared.accepted {
                         return Ok(self.superseded_disconnect(generation));
@@ -699,9 +725,12 @@ impl AppLifecycle {
                 DisconnectPhase::Publish(transaction) => {
                     self.event_bus.publish(AppEvent::Lv1 {
                         generation: transaction.cleared_generation,
-                        event: Lv1Event::Disconnected { reason: "Disconnected by user".to_string() },
+                        event: Lv1Event::Disconnected {
+                            reason: "Disconnected by user".to_string(),
+                        },
                     });
-                    self.event_bus.publish_runtime_generation_changed(transaction.active_generation);
+                    self.event_bus
+                        .publish_runtime_generation_changed(transaction.active_generation);
                     tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
                     return Ok(ShowCommandResult { changed: true });
                 }
@@ -844,26 +873,37 @@ impl AppLifecycle {
             timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
             ..Default::default()
         };
-        let mut phase = DiscoveryPhase::Collecting(tokio::task::spawn_blocking(move || discover(options)));
+        let mut phase =
+            DiscoveryPhase::Collecting(tokio::task::spawn_blocking(move || discover(options)));
         loop {
             phase = match phase {
                 DiscoveryPhase::Collecting(worker) => {
-                    let entries = worker.await
+                    let entries = worker
+                        .await
                         .map_err(|error| format!("LV1 discovery worker failed: {error}"))?
                         .map_err(|error| format!("Failed to discover LV1 systems: {error}"))?;
-                    DiscoveryPhase::Publishing(entries.iter()
-                        .filter_map(crate::connection_state::system_from_discovery).collect())
+                    DiscoveryPhase::Publishing(
+                        entries
+                            .iter()
+                            .filter_map(crate::connection_state::system_from_discovery)
+                            .collect(),
+                    )
                 }
                 DiscoveryPhase::Publishing(systems) => {
                     let (reply, response) = oneshot::channel();
-                    self.show.send(ShowCommand::SetDiscoveredLv1Systems {
-                        systems,
-                        reply: Some(reply),
-                    }).await.map_err(|_| "Show state is unavailable".to_string())?;
+                    self.show
+                        .send(ShowCommand::SetDiscoveredLv1Systems {
+                            systems,
+                            reply: Some(reply),
+                        })
+                        .await
+                        .map_err(|_| "Show state is unavailable".to_string())?;
                     DiscoveryPhase::AwaitingAcceptance(response)
                 }
                 DiscoveryPhase::AwaitingAcceptance(response) => {
-                    return response.await.map_err(|_| "Show state reply channel is closed".to_string());
+                    return response
+                        .await
+                        .map_err(|_| "Show state reply channel is closed".to_string());
                 }
             };
         }
@@ -884,17 +924,25 @@ impl AppLifecycle {
                 StartupConnectionPhase::Discovering(remembered) => {
                     self.refresh_lv1_discovery(None).await?;
                     let (reply, response) = oneshot::channel();
-                    self.show.send(ShowCommand::InitialProjectionState { reply }).await
+                    self.show
+                        .send(ShowCommand::InitialProjectionState { reply })
+                        .await
                         .map_err(|_| "Show state is unavailable".to_string())?;
-                    let state = response.await
+                    let state = response
+                        .await
                         .map_err(|_| "Show state reply channel is closed".to_string())?;
                     StartupConnectionPhase::Selecting {
                         remembered,
                         systems: state.discovered_lv1_systems,
                     }
                 }
-                StartupConnectionPhase::Selecting { remembered, systems } => {
-                    return self.startup_auto_connect_with_discovered(remembered, &systems).await;
+                StartupConnectionPhase::Selecting {
+                    remembered,
+                    systems,
+                } => {
+                    return self
+                        .startup_auto_connect_with_discovered(remembered, &systems)
+                        .await;
                 }
             };
         }

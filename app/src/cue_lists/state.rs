@@ -17,15 +17,26 @@ pub struct CueListsState {
 enum CueSelection {
     #[default]
     NoList,
-    Active { list: Uuid },
-    Armed { list: Uuid, entry: Uuid },
+    Active {
+        list: Uuid,
+    },
+    Armed {
+        list: Uuid,
+        entry: Uuid,
+    },
 }
 impl CueSelection {
     fn list(self) -> Option<Uuid> {
-        match self { Self::NoList => None, Self::Active { list } | Self::Armed { list, .. } => Some(list) }
+        match self {
+            Self::NoList => None,
+            Self::Active { list } | Self::Armed { list, .. } => Some(list),
+        }
     }
     fn cue(self) -> Option<Uuid> {
-        match self { Self::Armed { entry, .. } => Some(entry), _ => None }
+        match self {
+            Self::Armed { entry, .. } => Some(entry),
+            _ => None,
+        }
     }
     fn select(list: Option<Uuid>, cue: Option<Uuid>) -> Self {
         match (list, cue) {
@@ -34,7 +45,9 @@ impl CueSelection {
             (None, _) => Self::NoList,
         }
     }
-    fn cue_entry(&mut self, cue: Option<Uuid>) { *self = Self::select(self.list(), cue); }
+    fn cue_entry(&mut self, cue: Option<Uuid>) {
+        *self = Self::select(self.list(), cue);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +66,11 @@ pub struct CueListReconciliation {
 
 impl CueListsState {
     pub fn document(&self) -> CueListDocument {
-        CueListDocument { cue_lists: self.lists.clone(), active_cue_list_id: self.selection.list(), cued_cue_entry_id: self.selection.cue() }
+        CueListDocument {
+            cue_lists: self.lists.clone(),
+            active_cue_list_id: self.selection.list(),
+            cued_cue_entry_id: self.selection.cue(),
+        }
     }
 
     /// @cc [owner:mixxorz,label:persistence;safety] replacement-reconciles-selection
@@ -65,9 +82,11 @@ impl CueListsState {
         document: CueListDocument,
         valid_scene_ids: impl IntoIterator<Item = Uuid>,
     ) -> CueListReconciliation {
-        let orphaned_cue = document.active_cue_list_id.is_none() && document.cued_cue_entry_id.is_some();
+        let orphaned_cue =
+            document.active_cue_list_id.is_none() && document.cued_cue_entry_id.is_some();
         self.lists = document.cue_lists;
-        self.selection = CueSelection::select(document.active_cue_list_id, document.cued_cue_entry_id);
+        self.selection =
+            CueSelection::select(document.active_cue_list_id, document.cued_cue_entry_id);
         let mut result = self.reconcile(valid_scene_ids);
         result.cued_entry_cleared |= orphaned_cue;
         result
@@ -105,7 +124,8 @@ impl CueListsState {
     /// list MUST clear both active and cued selection; deleting an inactive list MUST preserve both
     /// selections and the relative order of every remaining list.
     pub fn delete_cue_list(&mut self, cue_list_id: Uuid) -> Result<(), String> {
-        let index = self.lists
+        let index = self
+            .lists
             .iter()
             .position(|list| list.id == cue_list_id)
             .ok_or_else(|| "Cue list not found".to_string())?;
@@ -130,7 +150,8 @@ impl CueListsState {
             if !seen.insert(id) {
                 return Err("Cue list reorder blocked: cue list not found".to_string());
             }
-            let list = self.lists
+            let list = self
+                .lists
                 .iter()
                 .find(|list| list.id == id)
                 .cloned()
@@ -166,7 +187,9 @@ impl CueListsState {
         scene_internal_id: Uuid,
         insert_index: usize,
     ) -> Result<CueEntry, String> {
-        let active_id = self.selection.list()
+        let active_id = self
+            .selection
+            .list()
             .ok_or_else(|| "Cue entry add blocked: no active cue list".to_string())?;
         let list = self
             .cue_list_mut(active_id)
@@ -308,7 +331,9 @@ impl CueListsState {
     /// Recall lookup MUST return only the selected entry from the active list and MUST return a
     /// blocking error when the cue, active list, or membership is missing.
     pub fn cued_entry(&self) -> Result<CueEntry, String> {
-        let cued_id = self.selection.cue()
+        let cued_id = self
+            .selection
+            .cue()
             .ok_or_else(|| "Cue recall blocked: no cued cue entry".to_string())?;
         let list = self
             .active_cue_list()
@@ -326,7 +351,9 @@ impl CueListsState {
     /// Advancement MUST return the currently cued entry and select its immediate successor in active
     /// list order, or clear the cue at the end; missing cue state MUST return an error without advancing.
     pub fn advance_after_successful_recall(&mut self) -> Result<CueEntry, String> {
-        let cued_id = self.selection.cue()
+        let cued_id = self
+            .selection
+            .cue()
             .ok_or_else(|| "Cue recall blocked: no cued cue entry".to_string())?;
         let list = self
             .active_cue_list()
@@ -356,8 +383,7 @@ impl CueListsState {
         let valid_scene_ids = valid_scene_ids.into_iter().collect::<HashSet<_>>();
         let mut result = CueListReconciliation::default();
         let active_id = self.selection.list();
-        let active =
-            active_id.and_then(|id| self.lists.iter().find(|list| list.id == id));
+        let active = active_id.and_then(|id| self.lists.iter().find(|list| list.id == id));
 
         if active_id.is_some() && active.is_none() {
             result.cued_entry_cleared = self.selection.cue().is_some();
@@ -393,7 +419,8 @@ impl CueListsState {
     }
 
     fn active_cue_list(&self) -> Option<&CueList> {
-        self.selection.list()
+        self.selection
+            .list()
             .and_then(|id| self.lists.iter().find(|list| list.id == id))
     }
 
@@ -403,9 +430,7 @@ impl CueListsState {
     }
 
     fn cue_list_mut(&mut self, id: Uuid) -> Option<&mut CueList> {
-        self.lists
-            .iter_mut()
-            .find(|list| list.id == id)
+        self.lists.iter_mut().find(|list| list.id == id)
     }
 }
 
@@ -430,7 +455,11 @@ mod tests {
     fn import_clears_orphaned_cue_and_reports_the_persisted_change() {
         let mut state = CueListsState::default();
         let result = state.replace_document(
-            CueListDocument { cue_lists: Vec::new(), active_cue_list_id: None, cued_cue_entry_id: Some(id(9)) },
+            CueListDocument {
+                cue_lists: Vec::new(),
+                active_cue_list_id: None,
+                cued_cue_entry_id: Some(id(9)),
+            },
             [],
         );
         assert!(result.cued_entry_cleared);

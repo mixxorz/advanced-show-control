@@ -1,5 +1,7 @@
 use super::backend::{Backend, BackendError, Candidate, Checked, VelopackBackend};
-use super::{UpdateChannel, UpdateInstallPlan, UpdateState, UpdateStatus, UpdatesCommand, UpdatesHandle};
+use super::{
+    UpdateChannel, UpdateInstallPlan, UpdateState, UpdateStatus, UpdatesCommand, UpdatesHandle,
+};
 use crate::runtime::events::{AppEvent, AppEventBus};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
@@ -18,17 +20,30 @@ struct Pending {
 enum ReleaseCapability {
     Empty,
     Available(Arc<dyn Candidate>),
-    Downloaded { candidate: Option<Arc<dyn Candidate>>, plan: UpdateInstallPlan },
+    Downloaded {
+        candidate: Option<Arc<dyn Candidate>>,
+        plan: UpdateInstallPlan,
+    },
 }
 impl ReleaseCapability {
     fn candidate(&self) -> Option<Arc<dyn Candidate>> {
-        match self { Self::Empty => None, Self::Available(candidate) => Some(candidate.clone()), Self::Downloaded { candidate, .. } => candidate.clone() }
+        match self {
+            Self::Empty => None,
+            Self::Available(candidate) => Some(candidate.clone()),
+            Self::Downloaded { candidate, .. } => candidate.clone(),
+        }
     }
     fn plan(&self) -> Option<&UpdateInstallPlan> {
-        match self { Self::Downloaded { plan, .. } => Some(plan), _ => None }
+        match self {
+            Self::Downloaded { plan, .. } => Some(plan),
+            _ => None,
+        }
     }
     fn checked(candidate: Option<Arc<dyn Candidate>>) -> Self {
-        match candidate { Some(candidate) => Self::Available(candidate), None => Self::Empty }
+        match candidate {
+            Some(candidate) => Self::Available(candidate),
+            None => Self::Empty,
+        }
     }
 }
 enum UpdateWorker {
@@ -37,9 +52,14 @@ enum UpdateWorker {
     Downloading(Pending),
 }
 impl UpdateWorker {
-    fn running(&self) -> bool { !matches!(self, Self::Idle) }
+    fn running(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
     fn operation_mut(&mut self) -> Option<&mut Pending> {
-        match self { Self::Idle => None, Self::Checking(operation) | Self::Downloading(operation) => Some(operation) }
+        match self {
+            Self::Idle => None,
+            Self::Checking(operation) | Self::Downloading(operation) => Some(operation),
+        }
     }
     fn complete(&mut self) -> Pending {
         match std::mem::replace(self, Self::Idle) {
@@ -49,9 +69,14 @@ impl UpdateWorker {
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AutomaticCheck { None, Queued }
+enum AutomaticCheck {
+    None,
+    Queued,
+}
 impl From<bool> for AutomaticCheck {
-    fn from(enabled: bool) -> Self { if enabled { Self::Queued } else { Self::None } }
+    fn from(enabled: bool) -> Self {
+        if enabled { Self::Queued } else { Self::None }
+    }
 }
 
 pub struct UpdatesTask {
@@ -281,7 +306,8 @@ impl UpdatesTask {
                 && !worker.running()
                 && automatic
                 && retained.borrow().settings.automatically_check_for_updates
-                && UpdateChannel::from(retained.borrow().settings.include_nightly_updates) == channel
+                && UpdateChannel::from(retained.borrow().settings.include_nightly_updates)
+                    == channel
             {
                 automatic_check = AutomaticCheck::None;
                 // Keep a verified download while refreshing the same channel's release feed.

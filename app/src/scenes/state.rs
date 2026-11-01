@@ -40,7 +40,10 @@ enum ClipboardState {
 
 impl ClipboardState {
     fn contents(&self) -> Option<&SceneSettingsClipboard> {
-        match self { Self::Empty => None, Self::Copied(contents) => Some(contents) }
+        match self {
+            Self::Empty => None,
+            Self::Copied(contents) => Some(contents),
+        }
     }
 
     fn copy(&mut self, contents: SceneSettingsClipboard) -> CopySceneSettingsResult {
@@ -59,7 +62,10 @@ enum SceneListTracking {
     #[default]
     Unobserved,
     Stable(Vec<SceneListEntry>),
-    Suppressed { scenes: Vec<SceneListEntry>, until: Instant },
+    Suppressed {
+        scenes: Vec<SceneListEntry>,
+        until: Instant,
+    },
 }
 
 impl SceneListTracking {
@@ -71,9 +77,14 @@ impl SceneListTracking {
     }
 
     fn observe(&mut self, scenes: Vec<SceneListEntry>, now: Instant) {
-        let changed = self.scenes().is_some_and(|previous| previous != scenes.as_slice());
+        let changed = self
+            .scenes()
+            .is_some_and(|previous| previous != scenes.as_slice());
         if changed {
-            *self = Self::Suppressed { scenes, until: now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW };
+            *self = Self::Suppressed {
+                scenes,
+                until: now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW,
+            };
         } else {
             // Equal resends retain the original deadline rather than rearming it.
             *self = match std::mem::take(self) {

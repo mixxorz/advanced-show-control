@@ -56,13 +56,25 @@ pub struct UpdateInstallPlan {
     authority: InstallAuthority,
 }
 #[derive(Clone)]
-enum InstallAuthority { Unbound, Bound(Arc<PlanAuthority>) }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UpdateChannel { Stable, Nightly }
-impl From<bool> for UpdateChannel {
-    fn from(nightly: bool) -> Self { if nightly { Self::Nightly } else { Self::Stable } }
+enum InstallAuthority {
+    Unbound,
+    Bound(Arc<PlanAuthority>),
 }
-impl UpdateChannel { fn nightly(self) -> bool { self == Self::Nightly } }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateChannel {
+    Stable,
+    Nightly,
+}
+impl From<bool> for UpdateChannel {
+    fn from(nightly: bool) -> Self {
+        if nightly { Self::Nightly } else { Self::Stable }
+    }
+}
+impl UpdateChannel {
+    fn nightly(self) -> bool {
+        self == Self::Nightly
+    }
+}
 
 struct PlanAuthority {
     settings: tokio::sync::watch::Receiver<crate::runtime::AppStateSnapshot>,
@@ -85,7 +97,10 @@ impl UpdateInstallPlan {
     fn validate(&self) -> Result<(), String> {
         let valid = match &self.authority {
             InstallAuthority::Unbound => false,
-            InstallAuthority::Bound(authority) => UpdateChannel::from(authority.settings.borrow().settings.include_nightly_updates) == authority.channel,
+            InstallAuthority::Bound(authority) => {
+                UpdateChannel::from(authority.settings.borrow().settings.include_nightly_updates)
+                    == authority.channel
+            }
         };
         if valid {
             Ok(())
@@ -114,7 +129,11 @@ impl UpdateInstallPlan {
 #[derive(Clone, Default)]
 pub struct UpdateInstallQueue(Arc<Mutex<InstallIntent>>);
 #[derive(Default)]
-enum InstallIntent { #[default] Unarmed, Armed(UpdateInstallPlan) }
+enum InstallIntent {
+    #[default]
+    Unarmed,
+    Armed(UpdateInstallPlan),
+}
 impl UpdateInstallQueue {
     pub fn arm(&self, plan: UpdateInstallPlan) -> Result<(), String> {
         plan.validate()?;
@@ -123,7 +142,8 @@ impl UpdateInstallQueue {
     }
     pub fn take(&self) -> Option<UpdateInstallPlan> {
         match std::mem::take(&mut *self.0.lock().expect("update install queue poisoned")) {
-            InstallIntent::Unarmed => None, InstallIntent::Armed(plan) => Some(plan),
+            InstallIntent::Unarmed => None,
+            InstallIntent::Armed(plan) => Some(plan),
         }
     }
 }

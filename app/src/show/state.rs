@@ -4,25 +4,44 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 enum FileIdentity {
     #[default]
     Untitled,
-    Saved { path: std::path::PathBuf, saved_at: String },
+    Saved {
+        path: std::path::PathBuf,
+        saved_at: String,
+    },
 }
 
 impl FileIdentity {
     fn path(&self) -> Option<&std::path::PathBuf> {
-        match self { Self::Untitled => None, Self::Saved { path, .. } => Some(path) }
+        match self {
+            Self::Untitled => None,
+            Self::Saved { path, .. } => Some(path),
+        }
     }
     fn saved_at(&self) -> Option<&String> {
-        match self { Self::Untitled => None, Self::Saved { saved_at, .. } => Some(saved_at) }
+        match self {
+            Self::Untitled => None,
+            Self::Saved { saved_at, .. } => Some(saved_at),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Cleanliness { #[default] Clean, Dirty }
+enum Cleanliness {
+    #[default]
+    Clean,
+    Dirty,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum AdmissionMode { #[default] Normal, Safe }
+enum AdmissionMode {
+    #[default]
+    Normal,
+    Safe,
+}
 impl From<bool> for AdmissionMode {
-    fn from(safe: bool) -> Self { if safe { Self::Safe } else { Self::Normal } }
+    fn from(safe: bool) -> Self {
+        if safe { Self::Safe } else { Self::Normal }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +145,8 @@ impl ShowState {
     }
 
     fn show_file_name(&self) -> String {
-        self.file.path()
+        self.file
+            .path()
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .map(str::to_string)
@@ -190,7 +210,10 @@ mod tests {
         assert!(state.session_state().show_file_dirty);
         state.mark_saved("/shows/template.ascs".into(), "saved".into());
         assert!(!state.session_state().show_file_dirty);
-        assert_eq!(state.projection_state().show_file_last_saved_at.as_deref(), Some("saved"));
+        assert_eq!(
+            state.projection_state().show_file_last_saved_at.as_deref(),
+            Some("saved")
+        );
         state.mark_dirty();
         assert!(state.session_state().show_file_dirty);
         state.reset_for_new_show_from_template(true);

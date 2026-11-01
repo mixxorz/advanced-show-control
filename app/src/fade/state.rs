@@ -49,7 +49,9 @@ impl ReadinessProgress {
     }
 
     fn lag(&mut self) {
-        *self = Self::Lagged { observed: self.observed() };
+        *self = Self::Lagged {
+            observed: self.observed(),
+        };
     }
 }
 
@@ -154,7 +156,9 @@ impl EngineState {
         self.readiness_barrier = Some(ReadinessBarrier {
             scene_index,
             scene_name,
-            progress: ReadinessProgress::AwaitingFirst { after: ping_sequence },
+            progress: ReadinessProgress::AwaitingFirst {
+                after: ping_sequence,
+            },
             deadline,
             timeout_ms: deadline
                 .saturating_duration_since(tokio::time::Instant::now())
@@ -266,7 +270,10 @@ mod tests {
     fn readiness_requires_two_newer_sequences_and_lag_cannot_release() {
         let mut progress = ReadinessProgress::AwaitingFirst { after: 10 };
         assert_eq!(progress.observe(10), PingGateProgress::Ignored);
-        assert_eq!(progress.observe(11), PingGateProgress::Waiting { observed: 1 });
+        assert_eq!(
+            progress.observe(11),
+            PingGateProgress::Waiting { observed: 1 }
+        );
         assert_eq!(progress.observe(11), PingGateProgress::Ignored);
         let mut poisoned = progress;
         poisoned.lag();

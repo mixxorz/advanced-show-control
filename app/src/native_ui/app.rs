@@ -40,9 +40,13 @@ use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 enum UpdateRestart {
     #[default]
     Idle,
-    Preparing { command_id: u64 },
+    Preparing {
+        command_id: u64,
+    },
     AwaitingSession(UpdateInstallPlan),
-    Disconnecting { command_id: u64 },
+    Disconnecting {
+        command_id: u64,
+    },
 }
 
 impl UpdateRestart {
@@ -343,7 +347,11 @@ impl AppRoot {
                 }
             }
             UiEvent::UpdateInstallPrepared { command_id, result } => {
-                if !self.update_restart.borrow_mut().preparing_finished(command_id) {
+                if !self
+                    .update_restart
+                    .borrow_mut()
+                    .preparing_finished(command_id)
+                {
                     return;
                 }
                 self.finish_command_event(
@@ -367,7 +375,11 @@ impl AppRoot {
                 }
             }
             UiEvent::UpdateShutdownPrepared { command_id, result } => {
-                if !self.update_restart.borrow_mut().disconnect_finished(command_id) {
+                if !self
+                    .update_restart
+                    .borrow_mut()
+                    .disconnect_finished(command_id)
+                {
                     return;
                 }
                 self.finish_command_event(
@@ -557,10 +569,13 @@ impl AppRoot {
                 window.push_notification(Notification::error(message), cx);
             }
         }
-        if !self.session_guard.borrow().is_pending() {
-            if matches!(*self.update_restart.borrow(), UpdateRestart::AwaitingSession(_)) {
-                *self.update_restart.borrow_mut() = UpdateRestart::Idle;
-            }
+        if !self.session_guard.borrow().is_pending()
+            && matches!(
+                *self.update_restart.borrow(),
+                UpdateRestart::AwaitingSession(_)
+            )
+        {
+            *self.update_restart.borrow_mut() = UpdateRestart::Idle;
         }
     }
 
@@ -1173,8 +1188,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DIRTY_SESSION_PROMPT_CHOICES, UpdateRestart, dirty_session_prompt_title, ensure_show_file_extension,
-        is_show_file_path, modal_surface_active, suggested_save_file_name,
+        DIRTY_SESSION_PROMPT_CHOICES, UpdateRestart, dirty_session_prompt_title,
+        ensure_show_file_extension, is_show_file_path, modal_surface_active,
+        suggested_save_file_name,
     };
     use crate::projector::AppViewState;
 

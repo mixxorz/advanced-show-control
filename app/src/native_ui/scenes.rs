@@ -12,8 +12,8 @@ use gpui_kit::{
 };
 use uuid::Uuid;
 
-use crate::native_ui::CommandDispatcher;
 use super::state::{DeferredCommit, ProjectedEdit};
+use crate::native_ui::CommandDispatcher;
 use crate::native_ui::button::bordered_button;
 use crate::native_ui::clipped_overlay::vertical_scrollbar_overlay;
 use crate::native_ui::numeric_control::editable_numeric_control;
@@ -42,19 +42,30 @@ struct PendingOverwrite {
 enum OverwriteConfirmation {
     #[default]
     Closed,
-    Awaiting { request: PendingOverwrite, return_focus: Option<FocusHandle> },
+    Awaiting {
+        request: PendingOverwrite,
+        return_focus: Option<FocusHandle>,
+    },
     RestoringFocus(Option<FocusHandle>),
 }
 
 impl OverwriteConfirmation {
     fn request(&self) -> Option<&PendingOverwrite> {
-        match self { Self::Awaiting { request, .. } => Some(request), _ => None }
+        match self {
+            Self::Awaiting { request, .. } => Some(request),
+            _ => None,
+        }
     }
 
     fn take_request(&mut self) -> Option<PendingOverwrite> {
-        if !matches!(self, Self::Awaiting { .. }) { return None; }
+        if !matches!(self, Self::Awaiting { .. }) {
+            return None;
+        }
         match std::mem::take(self) {
-            Self::Awaiting { request, return_focus } => {
+            Self::Awaiting {
+                request,
+                return_focus,
+            } => {
                 *self = Self::RestoringFocus(return_focus);
                 Some(request)
             }
@@ -65,7 +76,10 @@ impl OverwriteConfirmation {
     fn finish_focus(&mut self) -> Option<FocusHandle> {
         match std::mem::take(self) {
             Self::RestoringFocus(focus) => focus,
-            state => { *self = state; None }
+            state => {
+                *self = state;
+                None
+            }
         }
     }
 }
@@ -175,7 +189,8 @@ impl ScenesView {
             next_duration_identity,
         );
         if self
-            .duration_command.value()
+            .duration_command
+            .value()
             .is_some_and(|&(scene_id, target)| next_duration_identity == Some((scene_id, target)))
         {
             self.duration_command.clear();
@@ -229,7 +244,8 @@ impl ScenesView {
             return;
         };
         let pending_target = self
-            .duration_command.value()
+            .duration_command
+            .value()
             .filter(|(pending_scene, _)| *pending_scene == scene_id)
             .map(|(_, target)| *target);
         if !duration_update_requires_dispatch(duration_ms, projected, pending_target) {
@@ -237,7 +253,8 @@ impl ScenesView {
             return;
         }
         let command_id = self.dispatch_duration(scene_id, duration_ms);
-        self.duration_command.submit(command_id, (scene_id, duration_ms));
+        self.duration_command
+            .submit(command_id, (scene_id, duration_ms));
         self.reset_duration(duration_ms, window, cx);
     }
 
@@ -536,7 +553,8 @@ impl ScenesView {
         let next = stepped_duration(&draft, projected, direction);
         self.duration_edit.cancel();
         let pending_target = self
-            .duration_command.value()
+            .duration_command
+            .value()
             .filter(|(pending_scene, _)| *pending_scene == scene_id)
             .map(|(_, target)| *target);
         if duration_update_requires_dispatch(next, projected, pending_target) {

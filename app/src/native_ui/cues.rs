@@ -117,15 +117,23 @@ enum CueEditPhase {
 
 impl CueEditPhase {
     fn pending(&self) -> Option<u64> {
-        match self { Self::Submitting(id) => Some(*id), Self::Editing { .. } => None }
+        match self {
+            Self::Submitting(id) => Some(*id),
+            Self::Editing { .. } => None,
+        }
     }
 
     fn error(&self) -> Option<&str> {
-        match self { Self::Editing { error } => error.as_deref(), Self::Submitting(_) => None }
+        match self {
+            Self::Editing { error } => error.as_deref(),
+            Self::Submitting(_) => None,
+        }
     }
 
     fn clear_error(&mut self) {
-        if let Self::Editing { error } = self { *error = None; }
+        if let Self::Editing { error } = self {
+            *error = None;
+        }
     }
 }
 
@@ -142,11 +150,17 @@ enum CueManager {
     #[default]
     Closed,
     Open(ManagerEditor),
-    Submitting { command_id: u64, command: ManageCommand, editor: ManagerEditor },
+    Submitting {
+        command_id: u64,
+        command: ManageCommand,
+        editor: ManagerEditor,
+    },
 }
 
 impl CueManager {
-    fn is_open(self) -> bool { !matches!(self, Self::Closed) }
+    fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
 
     fn editor(self) -> ManagerEditor {
         match self {
@@ -156,15 +170,28 @@ impl CueManager {
     }
 
     fn name_editor(self) -> Option<NameEditor> {
-        match self.editor() { ManagerEditor::Naming(editor) => Some(editor), _ => None }
+        match self.editor() {
+            ManagerEditor::Naming(editor) => Some(editor),
+            _ => None,
+        }
     }
 
     fn pending_delete(self) -> Option<Uuid> {
-        match self.editor() { ManagerEditor::Deleting(id) => Some(id), _ => None }
+        match self.editor() {
+            ManagerEditor::Deleting(id) => Some(id),
+            _ => None,
+        }
     }
 
     fn pending_command(self) -> Option<(u64, ManageCommand)> {
-        match self { Self::Submitting { command_id, command, .. } => Some((command_id, command)), _ => None }
+        match self {
+            Self::Submitting {
+                command_id,
+                command,
+                ..
+            } => Some((command_id, command)),
+            _ => None,
+        }
     }
 
     fn set_editor(&mut self, next: ManagerEditor) {
@@ -174,15 +201,25 @@ impl CueManager {
         }
     }
 
-    fn clear_editor(&mut self) { self.set_editor(ManagerEditor::Idle); }
+    fn clear_editor(&mut self) {
+        self.set_editor(ManagerEditor::Idle);
+    }
 
     fn submit(&mut self, command_id: u64, command: ManageCommand) {
-        *self = Self::Submitting { command_id, command, editor: self.editor() };
+        *self = Self::Submitting {
+            command_id,
+            command,
+            editor: self.editor(),
+        };
     }
 
     fn complete(&mut self, command_id: u64) -> Option<ManageCommand> {
         match *self {
-            Self::Submitting { command_id: expected, command, editor } if expected == command_id => {
+            Self::Submitting {
+                command_id: expected,
+                command,
+                editor,
+            } if expected == command_id => {
                 *self = Self::Open(editor);
                 Some(command)
             }
@@ -198,15 +235,24 @@ enum CueEditorTarget {
 
 impl CueEditorTarget {
     fn mode(&self) -> CueEditorMode {
-        match self { Self::Existing(id) => CueEditorMode::Edit(*id), Self::Insertion(_) => CueEditorMode::Insert }
+        match self {
+            Self::Existing(id) => CueEditorMode::Edit(*id),
+            Self::Insertion(_) => CueEditorMode::Insert,
+        }
     }
 
     fn marker(&self) -> Option<&CueMarker> {
-        match self { Self::Existing(_) => None, Self::Insertion(marker) => Some(marker) }
+        match self {
+            Self::Existing(_) => None,
+            Self::Insertion(marker) => Some(marker),
+        }
     }
 
     fn marker_mut(&mut self) -> Option<&mut CueMarker> {
-        match self { Self::Existing(_) => None, Self::Insertion(marker) => Some(marker) }
+        match self {
+            Self::Existing(_) => None,
+            Self::Insertion(marker) => Some(marker),
+        }
     }
 }
 
@@ -379,7 +425,8 @@ impl CueListsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let nested_editor_was_open = self.manager.pending_delete().is_some() || self.manager.name_editor().is_some();
+        let nested_editor_was_open =
+            self.manager.pending_delete().is_some() || self.manager.name_editor().is_some();
         self.snapshot = snapshot;
         if let Some(editor) = &mut self.cue_editor {
             let list = active_cue_list(&self.snapshot);
@@ -397,7 +444,8 @@ impl CueListsView {
             self.selected_entry_id = None;
         }
         if self
-            .manager.pending_delete()
+            .manager
+            .pending_delete()
             .is_some_and(|id| !self.snapshot.cue_lists.iter().any(|list| list.id == id))
         {
             self.manager.clear_editor();
@@ -455,7 +503,9 @@ impl CueListsView {
                 if let Some(marker) = editor.target.marker_mut() {
                     marker.clear_pending();
                 }
-                editor.phase = CueEditPhase::Editing { error: Some("Could not save cue edit. Please retry.".into()) };
+                editor.phase = CueEditPhase::Editing {
+                    error: Some("Could not save cue edit. Please retry.".into()),
+                };
             } else {
                 self.close_cue_editor(window, cx);
             }
@@ -509,7 +559,11 @@ impl CueListsView {
         let target = match mode {
             CueEditorMode::Edit(id) => CueEditorTarget::Existing(id),
             CueEditorMode::Insert => CueEditorTarget::Insertion(CueMarker::new(
-                &list.entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+                &list
+                    .entries
+                    .iter()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
                 index,
             )),
         };
@@ -1596,7 +1650,8 @@ impl CueListsView {
                     }
                     this.name_input
                         .update(cx, |input, cx| input.set_value("", window, cx));
-                    this.manager.set_editor(ManagerEditor::Naming(NameEditor::Create));
+                    this.manager
+                        .set_editor(ManagerEditor::Naming(NameEditor::Create));
                     this.name_input.read(cx).focus_handle(cx).focus(window, cx);
                     cx.notify();
                 });
@@ -1664,9 +1719,10 @@ impl CueListsView {
                                     .into_iter()
                                     .map(|list| self.render_manage_row(list, cx)),
                             )
-                            .when(self.manager.name_editor() == Some(NameEditor::Create), |rows| {
-                                rows.child(self.render_create_row(cx))
-                            })
+                            .when(
+                                self.manager.name_editor() == Some(NameEditor::Create),
+                                |rows| rows.child(self.render_create_row(cx)),
+                            )
                             .child(vertical_scrollbar_overlay(&self.manager_scroll)),
                     )
                     .when_some(self.manager.pending_delete(), |panel, id| {
@@ -1853,7 +1909,8 @@ impl CueListsView {
                                     .iter()
                                     .find(|list| list.id == id)
                                     .map_or("", |list| list.name.as_str());
-                                this.manager.set_editor(ManagerEditor::Naming(NameEditor::Rename(id)));
+                                this.manager
+                                    .set_editor(ManagerEditor::Naming(NameEditor::Rename(id)));
                                 this.name_input.update(cx, |input, cx| {
                                     input.set_value(value, window, cx);
                                     input.select_all(window, cx);
@@ -2219,7 +2276,10 @@ mod tests {
         manager.submit(7, ManageCommand::Name(NameEditor::Create));
         assert!(manager.complete(6).is_none());
         assert!(manager.pending_command().is_some());
-        assert!(matches!(manager.complete(7), Some(ManageCommand::Name(NameEditor::Create))));
+        assert!(matches!(
+            manager.complete(7),
+            Some(ManageCommand::Name(NameEditor::Create))
+        ));
         assert_eq!(manager.name_editor(), Some(NameEditor::Create));
         manager.clear_editor();
         assert!(manager.name_editor().is_none());
@@ -2232,7 +2292,10 @@ mod tests {
         manager.clear_editor();
         assert!(manager.pending_delete().is_none());
         assert_eq!(manager.pending_command().map(|(id, _)| id), Some(8));
-        assert!(matches!(manager.complete(8), Some(ManageCommand::Delete(_))));
+        assert!(matches!(
+            manager.complete(8),
+            Some(ManageCommand::Delete(_))
+        ));
         assert!(manager.is_open());
     }
 

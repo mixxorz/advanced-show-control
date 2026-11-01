@@ -149,7 +149,8 @@ impl RenderOnce for SessionMenuPopover {
                                 .menu("Software Updates…", Box::new(SoftwareUpdates))
                                 .menu("Quit", Box::new(Quit))
                         });
-                        menu_state.update(cx, |state, _| *state = SessionMenuState::Open(menu.clone()));
+                        menu_state
+                            .update(cx, |state, _| *state = SessionMenuState::Open(menu.clone()));
                         menu.focus_handle(cx).focus(window, cx);
 
                         let popover_state = cx.entity();
@@ -160,7 +161,8 @@ impl RenderOnce for SessionMenuPopover {
                                     popover_state.update(cx, |state, cx| {
                                         state.dismiss(window, cx);
                                     });
-                                    menu_state.update(cx, |state, _| *state = SessionMenuState::Closed);
+                                    menu_state
+                                        .update(cx, |state, _| *state = SessionMenuState::Closed);
                                 }
                             })
                             .detach();

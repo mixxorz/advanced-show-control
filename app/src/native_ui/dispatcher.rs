@@ -80,7 +80,10 @@ struct SerialCommand {
 /// The lane owns one executing future; queued commands remain in the FIFO receiver.
 enum SerialLane {
     AwaitingCommand,
-    Executing { command_id: u64, future: CommandFuture },
+    Executing {
+        command_id: u64,
+        future: CommandFuture,
+    },
     Closed,
 }
 

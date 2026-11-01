@@ -103,18 +103,23 @@ impl Lv1Connection {
                     self.ensure_current().await?;
                     AdmissionPhase::ReserveCapacity
                 }
-                AdmissionPhase::ReserveCapacity => AdmissionPhase::Commit(self.handle.reserve().await),
+                AdmissionPhase::ReserveCapacity => {
+                    AdmissionPhase::Commit(self.handle.reserve().await)
+                }
                 AdmissionPhase::Commit(permit) => {
                     // Revocation wins even when capacity waiting ended with mailbox closure.
-                    return self.if_current(|| {
-                        let permit = permit.map_err(|error| match error {
-                            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-                            other => AppCommandError::CommandFailed(other.to_string()),
-                        })?;
-                        validate()?;
-                        permit.send(command);
-                        Ok(())
-                    }).await.ok_or(AppCommandError::StaleGeneration)?;
+                    return self
+                        .if_current(|| {
+                            let permit = permit.map_err(|error| match error {
+                                Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                                other => AppCommandError::CommandFailed(other.to_string()),
+                            })?;
+                            validate()?;
+                            permit.send(command);
+                            Ok(())
+                        })
+                        .await
+                        .ok_or(AppCommandError::StaleGeneration)?;
                 }
             };
         }
@@ -141,7 +146,9 @@ impl Lv1Connection {
         loop {
             phase = match phase {
                 ReplyPhase::Awaiting(response) => ReplyPhase::Validate(
-                    response.await.map_err(|_| AppCommandError::ReplyChannelClosed),
+                    response
+                        .await
+                        .map_err(|_| AppCommandError::ReplyChannelClosed),
                 ),
                 ReplyPhase::Validate(result) => {
                     self.ensure_current().await?;

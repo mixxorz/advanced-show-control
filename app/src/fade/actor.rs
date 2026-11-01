@@ -87,7 +87,9 @@ impl WriteAdmission {
         }
     }
 
-    async fn reserve(&mut self) -> Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError> {
+    async fn reserve(
+        &mut self,
+    ) -> Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError> {
         match self {
             Self::WaitingForCapacity(pending) => pending.admission.as_mut().await,
             Self::Idle => std::future::pending().await,
@@ -150,7 +152,9 @@ impl FadeExecution {
 
     async fn tick(&mut self) {
         match self {
-            Self::Running(interval) => { interval.tick().await; }
+            Self::Running(interval) => {
+                interval.tick().await;
+            }
             Self::Idle | Self::Completed | Self::Aborted => std::future::pending().await,
         }
     }
@@ -273,13 +277,10 @@ async fn run_engine(
                 cmd_rx.recv().await
             }
         };
-        let readiness_deadline = [
-            state.readiness_deadline(),
-            pending_write.deadline(),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+        let readiness_deadline = [state.readiness_deadline(), pending_write.deadline()]
+            .into_iter()
+            .flatten()
+            .min();
         let pending_admission_fut = pending_write.reserve();
         let readiness_timeout_fut = async move {
             match readiness_deadline {
@@ -761,10 +762,7 @@ fn cancel_expired_pending_write(pending: &mut WriteAdmission) {
     }
 }
 
-fn complete_fade(
-    execution: &mut FadeExecution,
-    state: &mut EngineState,
-) {
+fn complete_fade(execution: &mut FadeExecution, state: &mut EngineState) {
     if !execution.complete() {
         return;
     }
@@ -772,10 +770,7 @@ fn complete_fade(
     state.fan_out(FadeEvent::FadeCompleted);
 }
 
-fn handle_readiness_timeout(
-    state: &mut EngineState,
-    execution: &mut FadeExecution,
-) {
+fn handle_readiness_timeout(state: &mut EngineState, execution: &mut FadeExecution) {
     let Some(context) = state.timeout_readiness() else {
         return;
     };
@@ -840,7 +835,10 @@ enum FactContinuity {
 /// The prefix is finite so a busy producer cannot indefinitely starve admission.
 enum SnapshotAcquisition<T> {
     AwaitingSnapshot,
-    DrainingFacts { result: Result<T, AppCommandError>, remaining: usize },
+    DrainingFacts {
+        result: Result<T, AppCommandError>,
+        remaining: usize,
+    },
 }
 
 async fn await_snapshot_with_facts<T>(
@@ -894,10 +892,17 @@ async fn await_snapshot_with_facts<T>(
                     },
                 }
             }
-            SnapshotAcquisition::DrainingFacts { result, mut remaining } => {
+            SnapshotAcquisition::DrainingFacts {
+                result,
+                mut remaining,
+            } => {
                 apply_elapsed_readiness_timeout(context);
                 if remaining == 0 {
-                    return result.map(|value| SnapshotWithPings { value, pings, continuity });
+                    return result.map(|value| SnapshotWithPings {
+                        value,
+                        pings,
+                        continuity,
+                    });
                 }
                 let effect = match app_events.try_recv() {
                     Ok(event) => {
@@ -916,10 +921,16 @@ async fn await_snapshot_with_facts<T>(
                             context,
                         )
                     }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => AppEventEffect::StreamClosed,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        AppEventEffect::StreamClosed
+                    }
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                         apply_elapsed_readiness_timeout(context);
-                        return result.map(|value| SnapshotWithPings { value, pings, continuity });
+                        return result.map(|value| SnapshotWithPings {
+                            value,
+                            pings,
+                            continuity,
+                        });
                     }
                 };
                 if let Some(error) = snapshot_wait_cancellation(effect) {
@@ -969,10 +980,7 @@ fn apply_elapsed_readiness_timeout(context: &mut EventContext<'_>) {
         .readiness_deadline()
         .is_some_and(|deadline| Instant::now() >= deadline)
     {
-        handle_readiness_timeout(
-            context.state,
-            context.execution,
-        );
+        handle_readiness_timeout(context.state, context.execution);
     }
 }
 
@@ -1062,13 +1070,7 @@ fn process_app_event(
                     pan,
                 },
         }) if event_generation == generation => {
-            handle_pan_family_pan_report(
-                state,
-                group,
-                channel,
-                pan,
-                execution,
-            );
+            handle_pan_family_pan_report(state, group, channel, pan, execution);
         }
         Ok(AppEvent::Lv1 {
             generation: event_generation,

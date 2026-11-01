@@ -48,7 +48,10 @@ pub struct DiagnosticFileGate {
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
-enum DiagnosticVerbosity { Normal, Extensive }
+enum DiagnosticVerbosity {
+    Normal,
+    Extensive,
+}
 
 impl DiagnosticFileGate {
     fn bootstrap_debug() -> Self {
@@ -58,7 +61,11 @@ impl DiagnosticFileGate {
     }
 
     pub fn set_extensive_diagnostics_enabled(&self, enabled: bool) {
-        let verbosity = if enabled { DiagnosticVerbosity::Extensive } else { DiagnosticVerbosity::Normal };
+        let verbosity = if enabled {
+            DiagnosticVerbosity::Extensive
+        } else {
+            DiagnosticVerbosity::Normal
+        };
         self.verbosity.store(verbosity as u8, Ordering::Relaxed);
     }
 

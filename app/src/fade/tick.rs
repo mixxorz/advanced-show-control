@@ -147,7 +147,8 @@ impl ActiveTarget {
 
     /// Returns true if the fade has completed (t >= 1.0).
     pub(crate) fn is_done(&self, now: Instant) -> bool {
-        matches!(self.finish, FinishIntent::OnNextTick) || now.duration_since(self.started_at) >= self.duration
+        matches!(self.finish, FinishIntent::OnNextTick)
+            || now.duration_since(self.started_at) >= self.duration
     }
 
     /// @cc [owner:mixxorz,label:safety;product] override-thresholds

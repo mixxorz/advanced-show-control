@@ -12,7 +12,10 @@ pub(crate) struct StagedFile {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Publication { Staged, Published }
+enum Publication {
+    Staged,
+    Published,
+}
 
 impl StagedFile {
     /// @cc [owner:mixxorz,label:persistence] stage-complete-synced-content
