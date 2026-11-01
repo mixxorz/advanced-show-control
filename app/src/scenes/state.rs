@@ -30,6 +30,71 @@ pub(crate) struct CopySceneSettingsResult {
     pub availability_changed: bool,
 }
 
+/// Clipboard availability is session-owned, independent of runtime connectivity.
+#[derive(Debug, Default)]
+enum ClipboardState {
+    #[default]
+    Empty,
+    Copied(SceneSettingsClipboard),
+}
+
+impl ClipboardState {
+    fn contents(&self) -> Option<&SceneSettingsClipboard> {
+        match self { Self::Empty => None, Self::Copied(contents) => Some(contents) }
+    }
+
+    fn copy(&mut self, contents: SceneSettingsClipboard) -> CopySceneSettingsResult {
+        let result = CopySceneSettingsResult {
+            contents_changed: self.contents() != Some(&contents),
+            availability_changed: matches!(self, Self::Empty),
+        };
+        *self = Self::Copied(contents);
+        result
+    }
+}
+
+/// The first list establishes a baseline; only a later changed list starts suppression.
+#[derive(Debug, Default)]
+enum SceneListTracking {
+    #[default]
+    Unobserved,
+    Stable(Vec<SceneListEntry>),
+    Suppressed { scenes: Vec<SceneListEntry>, until: Instant },
+}
+
+impl SceneListTracking {
+    fn scenes(&self) -> Option<&[SceneListEntry]> {
+        match self {
+            Self::Unobserved => None,
+            Self::Stable(scenes) | Self::Suppressed { scenes, .. } => Some(scenes),
+        }
+    }
+
+    fn observe(&mut self, scenes: Vec<SceneListEntry>, now: Instant) {
+        let changed = self.scenes().is_some_and(|previous| previous != scenes.as_slice());
+        if changed {
+            *self = Self::Suppressed { scenes, until: now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW };
+        } else {
+            // Equal resends retain the original deadline rather than rearming it.
+            *self = match std::mem::take(self) {
+                Self::Suppressed { until, .. } => Self::Suppressed { scenes, until },
+                _ => Self::Stable(scenes),
+            };
+        }
+    }
+
+    fn suppressed_at(&self, now: Instant) -> bool {
+        matches!(self, Self::Suppressed { until, .. } if now < *until)
+    }
+
+    fn clear_suppression(&mut self) {
+        *self = match std::mem::take(self) {
+            Self::Suppressed { scenes, .. } | Self::Stable(scenes) => Self::Stable(scenes),
+            Self::Unobserved => Self::Unobserved,
+        };
+    }
+}
+
 /// Gate deciding whether a scene observation is an operator recall.
 ///
 /// The LV1 re-broadcasts the already-active scene around (re)connect, so the
@@ -62,11 +127,10 @@ enum RecallGate {
 pub struct ScenesState {
     scene_configs: Vec<SceneConfig>,
     selected_scene_internal_id: Option<uuid::Uuid>,
-    scene_settings_clipboard: Option<SceneSettingsClipboard>,
+    scene_settings_clipboard: ClipboardState,
     ready_generation: Option<u64>,
     gate: RecallGate,
-    last_scene_list: Option<Vec<SceneListEntry>>,
-    scene_list_edit_suppressed_until: Option<Instant>,
+    scene_list_tracking: SceneListTracking,
 }
 
 impl ScenesState {
@@ -74,7 +138,7 @@ impl ScenesState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id,
-            scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
+            scene_settings_clipboard_available: self.scene_settings_clipboard.contents().is_some(),
             ready_generation: self.ready_generation,
         }
     }
@@ -105,7 +169,7 @@ impl ScenesState {
      */
     pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
         self.replace_snapshot(snapshot);
-        self.scene_settings_clipboard = None;
+        self.scene_settings_clipboard = ClipboardState::Empty;
         self.reset_recall_tracking();
     }
 
@@ -184,13 +248,7 @@ impl ScenesState {
             channel_configs: source.channel_configs.clone(),
             scoped_channels: source.scoped_channels.clone(),
         };
-        let contents_changed = self.scene_settings_clipboard.as_ref() != Some(&clipboard);
-        let availability_changed = self.scene_settings_clipboard.is_none();
-        self.scene_settings_clipboard = Some(clipboard);
-        Ok(CopySceneSettingsResult {
-            contents_changed,
-            availability_changed,
-        })
+        Ok(self.scene_settings_clipboard.copy(clipboard))
     }
 
     /**
@@ -204,7 +262,7 @@ impl ScenesState {
     ) -> Result<bool, String> {
         let clipboard = self
             .scene_settings_clipboard
-            .as_ref()
+            .contents()
             .ok_or_else(|| "Scene settings clipboard is empty".to_string())?;
         let destination_index = self
             .scene_configs
@@ -263,8 +321,7 @@ impl ScenesState {
         let source = self
             .get_scene_config_mut(source_internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
-        source.scene_index = Some(target.index);
-        source.scene_name = target.name.clone();
+        source.link_to(target.index, target.name.clone());
         Ok(true)
     }
 
@@ -275,8 +332,8 @@ impl ScenesState {
         overwrite_existing: bool,
     ) -> Result<bool, String> {
         let target = self
-            .last_scene_list
-            .as_ref()
+            .scene_list_tracking
+            .scenes()
             .and_then(|scenes| {
                 scenes
                     .iter()
@@ -306,14 +363,7 @@ impl ScenesState {
     }
 
     pub(crate) fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
-        if self
-            .last_scene_list
-            .as_ref()
-            .is_some_and(|previous| previous != &scene_list)
-        {
-            self.scene_list_edit_suppressed_until = Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
-        }
-        self.last_scene_list = Some(scene_list);
+        self.scene_list_tracking.observe(scene_list, now);
     }
 
     pub(crate) fn observe_and_align_scene_list(
@@ -337,14 +387,12 @@ impl ScenesState {
      */
     pub(crate) fn mark_scene_library_unavailable(&mut self) {
         self.ready_generation = None;
-        self.last_scene_list = None;
+        self.scene_list_tracking = SceneListTracking::Unobserved;
         self.reset_recall_tracking();
     }
 
     pub(crate) fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {
-        self.scene_list_edit_suppressed_until
-            .map(|deadline| now < deadline)
-            .unwrap_or(false)
+        self.scene_list_tracking.suppressed_at(now)
     }
 
     pub(crate) fn accepts_at(
@@ -394,7 +442,7 @@ impl ScenesState {
 
     fn reset_recall_tracking(&mut self) {
         self.gate = RecallGate::default();
-        self.scene_list_edit_suppressed_until = None;
+        self.scene_list_tracking.clear_suppression();
     }
 }
 
@@ -513,6 +561,20 @@ mod tests {
             scene_entry(4, "Song 2 -- Changed"),
             scene_entry(5, "Test"),
         ]
+    }
+
+    #[test]
+    fn identical_late_resend_preserves_suppression_for_an_earlier_observation() {
+        let mut state = ScenesState::default();
+        let now = Instant::now();
+        state.observe_scene_list(vec![scene_entry(1, "Intro")], now);
+        let changed = vec![scene_entry(1, "Renamed")];
+        state.observe_scene_list(changed.clone(), now + Duration::from_millis(10));
+        state.observe_scene_list(changed, now + Duration::from_millis(600));
+
+        // A settled observation carries its original timestamp, even after the window elapsed.
+        assert!(state.is_scene_list_edit_suppressed(now + Duration::from_millis(100)));
+        assert!(!state.is_scene_list_edit_suppressed(now + Duration::from_millis(600)));
     }
 
     #[test]

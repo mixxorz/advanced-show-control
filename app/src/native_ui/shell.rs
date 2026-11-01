@@ -28,6 +28,12 @@ use super::{CommandDispatcher, MainTab};
 
 type OpenConnection = dyn Fn(&mut Window, &mut gpui_kit::App);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionMenuVisibility {
+    Closed,
+    Open,
+}
+
 pub struct AppShell {
     active_tab: MainTab,
     snapshot: AppViewState,
@@ -38,7 +44,7 @@ pub struct AppShell {
     logs: Entity<LogsView>,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     action_context: FocusHandle,
-    session_menu_open: bool,
+    session_menu: SessionMenuVisibility,
     open_connection: Box<OpenConnection>,
 }
 
@@ -77,7 +83,7 @@ impl AppShell {
             logs,
             go_submissions,
             action_context,
-            session_menu_open: false,
+            session_menu: SessionMenuVisibility::Closed,
             open_connection: Box::new(open_connection),
         }
     }
@@ -87,7 +93,7 @@ impl AppShell {
     }
 
     pub fn session_menu_open(&self) -> bool {
-        self.session_menu_open
+        self.session_menu == SessionMenuVisibility::Open
     }
 
     pub fn modal_open(&self, cx: &gpui_kit::App) -> bool {
@@ -118,7 +124,7 @@ impl AppShell {
             || !self.go_submissions.borrow().can_submit()
             || self.dispatcher.session_transition_pending()
             || self.modal_open(cx)
-            || self.session_menu_open
+            || self.session_menu == SessionMenuVisibility::Open
             || self.shortcut_capture_active(cx)
         {
             return false;
@@ -180,7 +186,7 @@ impl AppShell {
         BaseButton::new(format!("tab-{label}"))
             .accessibility_label(format!("{label} tab"))
             .selected(active)
-            .disabled(self.modal_open(cx) || self.session_menu_open)
+            .disabled(self.modal_open(cx) || self.session_menu == SessionMenuVisibility::Open)
             .px_5()
             .py_4()
             .border_b_2()
@@ -229,7 +235,7 @@ impl Render for AppShell {
         );
         let lockout = self.snapshot.lockout;
         let trigger_disabled = self.modal_open(cx) || self.shortcut_capture_active(cx);
-        let actions_blocked = trigger_disabled || self.session_menu_open;
+        let actions_blocked = trigger_disabled || self.session_menu == SessionMenuVisibility::Open;
         let lockout_dispatcher = self.dispatcher.clone();
 
         div()
@@ -255,7 +261,7 @@ impl Render for AppShell {
                                 let entity = cx.entity();
                                 move |open, _, cx| {
                                     entity.update(cx, |shell, cx| {
-                                        shell.session_menu_open = *open;
+                                        shell.session_menu = if *open { SessionMenuVisibility::Open } else { SessionMenuVisibility::Closed };
                                         cx.notify();
                                     });
                                 }
@@ -369,7 +375,7 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
         && shell.go_submissions.borrow().can_submit()
         && !shell.dispatcher.session_transition_pending()
         && !shell.modal_open(cx)
-        && !shell.session_menu_open
+        && shell.session_menu != SessionMenuVisibility::Open
         && !shell.shortcut_capture_active(cx);
     let entity = cx.entity();
 

@@ -16,27 +16,49 @@ use super::types::{
 /// A scene observation MUST contain one index and one name, accept either arrival order, use the
 /// latest value when one side repeats before completion, and consume both fields after emission.
 #[derive(Default)]
-pub(super) struct SceneBuffer {
-    pending_index: Option<i32>,
-    pending_name: Option<String>,
+pub(super) enum SceneBuffer {
+    #[default]
+    Empty,
+    Index(i32),
+    Name(String),
 }
 
 impl SceneBuffer {
     pub(super) fn apply_index(&mut self, index: i32) -> Option<SceneState> {
-        self.pending_index = Some(index);
-        self.try_emit()
+        match std::mem::replace(self, Self::Empty) {
+            Self::Name(name) => Some(SceneState { index, name }),
+            Self::Empty | Self::Index(_) => {
+                *self = Self::Index(index);
+                None
+            }
+        }
     }
 
     pub(super) fn apply_name(&mut self, name: String) -> Option<SceneState> {
-        self.pending_name = Some(name);
-        self.try_emit()
+        match std::mem::replace(self, Self::Empty) {
+            Self::Index(index) => Some(SceneState { index, name }),
+            Self::Empty | Self::Name(_) => {
+                *self = Self::Name(name);
+                None
+            }
+        }
     }
+}
 
-    fn try_emit(&mut self) -> Option<SceneState> {
-        let index = self.pending_index?;
-        let name = self.pending_name.take()?;
-        self.pending_index = None;
-        Some(SceneState { index, name })
+/// The empty, received library is distinct from a transport that has not supplied one.
+#[derive(Default)]
+pub(super) enum SceneLibrary {
+    #[default]
+    AwaitingNotification,
+    Known(Vec<SceneListEntry>),
+}
+
+impl SceneLibrary {
+    fn snapshot(&self) -> Option<Vec<SceneListEntry>> {
+        match self {
+            Self::AwaitingNotification => None,
+            Self::Known(entries) => Some(entries.clone()),
+        }
     }
 }
 
@@ -70,16 +92,38 @@ pub(super) fn apply_mute_update(
     }
 }
 
+pub(super) enum Heartbeat {
+    Awaiting { last_ping: Instant },
+    TimedOut,
+}
+
+impl Heartbeat {
+    pub(super) fn receive(&mut self, now: Instant) {
+        *self = Self::Awaiting { last_ping: now };
+    }
+
+    pub(super) fn deadline(&self, timeout: std::time::Duration) -> Instant {
+        match self {
+            Self::Awaiting { last_ping } => *last_ping + timeout,
+            Self::TimedOut => panic!("timed-out heartbeat has no next deadline"),
+        }
+    }
+
+    pub(super) fn expire(&mut self) {
+        *self = Self::TimedOut;
+    }
+}
+
 pub(super) struct ActorState {
     generation: u64,
     pub(super) connection: ConnectionStatus,
     pub(super) scene: Option<SceneState>,
-    pub(super) scene_list: Option<Vec<SceneListEntry>>,
+    pub(super) scene_list: SceneLibrary,
     pub(super) channels: Vec<ChannelInfo>,
     pub(super) ping_sequence: u64,
     pub(super) scene_observation_sequence: u64,
     pub(super) scene_buf: SceneBuffer,
-    pub(super) last_ping: Instant,
+    pub(super) heartbeat: Heartbeat,
     pub(super) event_bus: AppEventBus,
 }
 
@@ -89,12 +133,12 @@ impl ActorState {
             generation,
             connection: ConnectionStatus::Connecting,
             scene: None,
-            scene_list: None,
+            scene_list: SceneLibrary::AwaitingNotification,
             channels: Vec::new(),
             ping_sequence: 0,
             scene_observation_sequence: 0,
             scene_buf: SceneBuffer::default(),
-            last_ping: Instant::now(),
+            heartbeat: Heartbeat::Awaiting { last_ping: Instant::now() },
             event_bus,
         }
     }
@@ -103,7 +147,7 @@ impl ActorState {
         Lv1StateSnapshot {
             connection: self.connection.clone(),
             scene: self.scene.clone(),
-            scene_list: self.scene_list.clone(),
+            scene_list: self.scene_list.snapshot(),
             channels: self.channels.clone(),
             ping_sequence: self.ping_sequence,
         }
@@ -184,7 +228,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &OscMessage) {
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
                 state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
-                state.scene_list = Some(list.clone());
+                state.scene_list = SceneLibrary::Known(list.clone());
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
             Err(err) => {
@@ -329,6 +373,17 @@ mod tests {
                 name: "Scene B".to_string()
             }
         );
+    }
+
+    #[test]
+    fn scene_buffer_replaces_repeated_index_before_name_arrives() {
+        let mut buffer = SceneBuffer::default();
+        assert!(buffer.apply_index(1).is_none());
+        assert!(buffer.apply_index(2).is_none());
+        let scene = buffer.apply_name("Latest".to_string()).unwrap();
+        assert_eq!(scene.index, 2);
+        assert_eq!(scene.name, "Latest");
+        assert!(buffer.apply_name("Next".to_string()).is_none());
     }
 
     #[test]

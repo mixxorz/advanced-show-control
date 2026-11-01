@@ -35,6 +35,56 @@ use super::shell::AppShell;
 use super::state::{GoSubmissionGuard, session_display_name};
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
+/// The install plan has exactly one owner at each restart phase.
+#[derive(Default)]
+enum UpdateRestart {
+    #[default]
+    Idle,
+    Preparing { command_id: u64 },
+    AwaitingSession(UpdateInstallPlan),
+    Disconnecting { command_id: u64 },
+}
+
+impl UpdateRestart {
+    fn preparing_finished(&mut self, command_id: u64) -> bool {
+        if !matches!(self, Self::Preparing { command_id: current } if *current == command_id) {
+            return false;
+        }
+        *self = Self::Idle;
+        true
+    }
+
+    fn disconnect_finished(&mut self, command_id: u64) -> bool {
+        if !matches!(self, Self::Disconnecting { command_id: current } if *current == command_id) {
+            return false;
+        }
+        *self = Self::Idle;
+        true
+    }
+
+    fn worker_pending(&self) -> bool {
+        matches!(self, Self::Preparing { .. } | Self::Disconnecting { .. })
+    }
+
+    fn take_plan(&mut self) -> Option<UpdateInstallPlan> {
+        if !matches!(self, Self::AwaitingSession(_)) {
+            return None;
+        }
+        match std::mem::take(self) {
+            Self::AwaitingSession(plan) => Some(plan),
+            _ => unreachable!("phase checked above"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum OrdinarySave {
+    #[default]
+    Idle,
+    Saving(u64),
+    ChoosingDestination,
+}
+
 pub struct AppRoot {
     presentation: PresentationState,
     dispatcher: CommandDispatcher,
@@ -46,10 +96,9 @@ pub struct AppRoot {
     connection_return_focus: Rc<RefCell<Option<FocusHandle>>>,
     latest_snapshot: Rc<RefCell<AppViewState>>,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
-    pending_save_command_id: Cell<Option<u64>>,
+    ordinary_save: Cell<OrdinarySave>,
     session_guard: RefCell<SessionGuard>,
-    pending_update_preparation: Cell<Option<u64>>,
-    pending_update_install: RefCell<Option<UpdateInstallPlan>>,
+    update_restart: RefCell<UpdateRestart>,
 }
 
 impl AppRoot {
@@ -142,10 +191,9 @@ impl AppRoot {
             connection_return_focus,
             latest_snapshot,
             go_submissions,
-            pending_save_command_id: Cell::new(None),
+            ordinary_save: Cell::new(OrdinarySave::Idle),
             session_guard: RefCell::new(session_guard),
-            pending_update_preparation: Cell::new(None),
-            pending_update_install: RefCell::new(None),
+            update_restart: RefCell::new(UpdateRestart::Idle),
         }
     }
 
@@ -222,7 +270,7 @@ impl AppRoot {
             UiEvent::CommandStarted { command_id } => {
                 self.presentation.command_started(command_id);
                 let mut connection = self.connection.borrow_mut();
-                if connection.pending_command_id == Some(command_id) {
+                if connection.pending_command_id() == Some(command_id) {
                     connection.command_error = None;
                 }
                 drop(connection);
@@ -253,8 +301,8 @@ impl AppRoot {
                 self.finish_command_event(command_id, result.map(|_| ()), window, cx);
             }
             UiEvent::SaveDestinationRequired { command_id } => {
-                if self.pending_save_command_id.get() == Some(command_id) {
-                    self.pending_save_command_id.set(None);
+                if self.ordinary_save.get() == OrdinarySave::Saving(command_id) {
+                    self.ordinary_save.set(OrdinarySave::Idle);
                     if !window.has_active_prompt()
                         && !self.shell.read(cx).shortcut_capture_active(cx)
                         && !self.modal_open(window, cx)
@@ -295,10 +343,9 @@ impl AppRoot {
                 }
             }
             UiEvent::UpdateInstallPrepared { command_id, result } => {
-                if self.pending_update_preparation.get() != Some(command_id) {
+                if !self.update_restart.borrow_mut().preparing_finished(command_id) {
                     return;
                 }
-                self.pending_update_preparation.set(None);
                 self.finish_command_event(
                     command_id,
                     result.as_ref().map(|_| ()).map_err(Clone::clone),
@@ -307,7 +354,7 @@ impl AppRoot {
                 );
                 match result {
                     Ok(plan) if !self.action_blocked(window, cx) => {
-                        *self.pending_update_install.borrow_mut() = Some(plan);
+                        *self.update_restart.borrow_mut() = UpdateRestart::AwaitingSession(plan);
                         self.request_session_action(SessionAction::UpdateAndRestart, window, cx);
                     }
                     Ok(_) => window.push_notification(
@@ -320,10 +367,9 @@ impl AppRoot {
                 }
             }
             UiEvent::UpdateShutdownPrepared { command_id, result } => {
-                if self.pending_update_preparation.get() != Some(command_id) {
+                if !self.update_restart.borrow_mut().disconnect_finished(command_id) {
                     return;
                 }
-                self.pending_update_preparation.set(None);
                 self.finish_command_event(
                     command_id,
                     result.as_ref().map(|_| ()).map_err(Clone::clone),
@@ -379,11 +425,11 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_save_command_id.get() == Some(command_id) {
-            self.pending_save_command_id.set(None);
+        if self.ordinary_save.get() == OrdinarySave::Saving(command_id) {
+            self.ordinary_save.set(OrdinarySave::Idle);
         }
         let was_connection_command =
-            self.connection.borrow().pending_command_id == Some(command_id);
+            self.connection.borrow().pending_command_id() == Some(command_id);
         let completed_error = result.as_ref().err().cloned();
         self.connection.borrow_mut().finish_command(command_id);
         let failed = result.is_err();
@@ -444,7 +490,7 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.pending_update_preparation.get().is_some()
+        if self.update_restart.borrow().worker_pending()
             || modal_surface_active(
                 window.has_active_prompt(),
                 window.has_active_dialog(cx),
@@ -512,7 +558,9 @@ impl AppRoot {
             }
         }
         if !self.session_guard.borrow().is_pending() {
-            self.pending_update_install.borrow_mut().take();
+            if matches!(*self.update_restart.borrow(), UpdateRestart::AwaitingSession(_)) {
+                *self.update_restart.borrow_mut() = UpdateRestart::Idle;
+            }
         }
     }
 
@@ -581,7 +629,7 @@ impl AppRoot {
     }
 
     fn new_show(&self) {
-        self.pending_save_command_id.set(None);
+        self.ordinary_save.set(OrdinarySave::Idle);
         let command_id = self
             .dispatcher
             .dispatch_serial(|commands| async move { commands.new_show_file().await.map(|_| ()) });
@@ -591,7 +639,7 @@ impl AppRoot {
     }
 
     fn prompt_for_show_file(&self, from_template: bool, cx: &mut Context<Self>) {
-        self.pending_save_command_id.set(None);
+        self.ordinary_save.set(OrdinarySave::Idle);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -663,42 +711,50 @@ impl AppRoot {
     }
 
     pub fn save_show(&self) {
-        self.pending_save_command_id
-            .set(Some(self.dispatcher.save_show()));
+        self.ordinary_save
+            .set(OrdinarySave::Saving(self.dispatcher.save_show()));
     }
 
     pub fn save_show_as(&self, cx: &mut Context<Self>) {
-        self.pending_save_command_id.set(None);
+        self.ordinary_save.set(OrdinarySave::Idle);
         self.prompt_to_save(true, cx);
     }
 
     fn prompt_to_save(&self, save_as: bool, cx: &mut Context<Self>) {
+        self.ordinary_save.set(OrdinarySave::ChoosingDestination);
         let folder = crate::show_file::default_show_folder();
         let file_name = suggested_save_file_name(self.presentation.snapshot(), save_as);
         let response = cx.prompt_for_new_path(&folder, Some(&file_name));
         let dispatcher = self.dispatcher.clone();
-        cx.spawn(async move |this, cx| match response.await {
-            Ok(Ok(Some(path))) => {
-                let path = ensure_show_file_extension(path);
-                dispatcher.dispatch_serial(move |commands| async move {
-                    if save_as {
-                        commands.save_show_file_as(Some(path)).await.map(|_| ())
-                    } else {
-                        commands.save_show_file(Some(path)).await.map(|_| ())
-                    }
-                });
+        cx.spawn(async move |this, cx| {
+            let response = response.await;
+            let _ = this.update(cx, |this, _| this.ordinary_save.set(OrdinarySave::Idle));
+            match response {
+                Ok(Ok(Some(path))) => {
+                    let path = ensure_show_file_extension(path);
+                    let command_id = dispatcher.dispatch_serial(move |commands| async move {
+                        if save_as {
+                            commands.save_show_file_as(Some(path)).await.map(|_| ())
+                        } else {
+                            commands.save_show_file(Some(path)).await.map(|_| ())
+                        }
+                    });
+                    let _ = this.update(cx, |this, _| {
+                        this.ordinary_save.set(OrdinarySave::Saving(command_id));
+                    });
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => Self::push_async_error(
+                    &this,
+                    format!("Could not open the save picker: {error}"),
+                    cx,
+                ),
+                Err(error) => Self::push_async_error(
+                    &this,
+                    format!("The save picker did not return a result: {error}"),
+                    cx,
+                ),
             }
-            Ok(Ok(None)) => {}
-            Ok(Err(error)) => Self::push_async_error(
-                &this,
-                format!("Could not open the save picker: {error}"),
-                cx,
-            ),
-            Err(error) => Self::push_async_error(
-                &this,
-                format!("The save picker did not return a result: {error}"),
-                cx,
-            ),
         })
         .detach();
     }
@@ -730,7 +786,7 @@ impl AppRoot {
         window.has_active_prompt()
             || self.modal_open(window, cx)
             || self.session_guard.borrow().is_pending()
-            || self.pending_update_preparation.get().is_some()
+            || self.update_restart.borrow().worker_pending()
     }
 
     /// @cc [owner:mixxorz,label:product;persistence] update-restart-uses-session-guard
@@ -739,9 +795,10 @@ impl AppRoot {
     /// and installer handoff; cancellation, disconnect failure, or modal interference MUST NOT arm
     /// the update and MUST release the pending action.
     fn continue_update_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(plan) = self.pending_update_install.borrow_mut().take() {
+        let plan = self.update_restart.borrow_mut().take_plan();
+        if let Some(plan) = plan {
             let command_id = self.dispatcher.disconnect_for_update(plan);
-            self.pending_update_preparation.set(Some(command_id));
+            *self.update_restart.borrow_mut() = UpdateRestart::Disconnecting { command_id };
             self.session_guard
                 .borrow_mut()
                 .continuation_started(command_id);
@@ -800,8 +857,9 @@ impl AppRoot {
                     }
                     let _ = this.update_in(cx, |this, window, cx| {
                         if !this.action_blocked(window, cx) {
-                            this.pending_update_preparation
-                                .set(Some(this.dispatcher.prepare_update_install()));
+                            *this.update_restart.borrow_mut() = UpdateRestart::Preparing {
+                                command_id: this.dispatcher.prepare_update_install(),
+                            };
                         }
                     });
                 })
@@ -1115,10 +1173,24 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DIRTY_SESSION_PROMPT_CHOICES, dirty_session_prompt_title, ensure_show_file_extension,
+        DIRTY_SESSION_PROMPT_CHOICES, UpdateRestart, dirty_session_prompt_title, ensure_show_file_extension,
         is_show_file_path, modal_surface_active, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn restart_worker_results_must_match_both_phase_and_command() {
+        let mut restart = UpdateRestart::Preparing { command_id: 4 };
+        assert!(!restart.disconnect_finished(4));
+        assert!(!restart.preparing_finished(3));
+        assert!(restart.worker_pending());
+        assert!(restart.preparing_finished(4));
+        assert!(!restart.worker_pending());
+        restart = UpdateRestart::Disconnecting { command_id: 5 };
+        assert!(!restart.preparing_finished(5));
+        assert!(restart.disconnect_finished(5));
+        assert!(!restart.disconnect_finished(5));
+    }
 
     #[test]
     fn dirty_session_prompt_names_the_session_and_uses_standard_choices() {

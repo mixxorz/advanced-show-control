@@ -194,6 +194,28 @@ impl PendingSceneObservation {
     }
 }
 
+/// New observations replace the settling payload; taking/canceling consumes it exactly once.
+#[derive(Default)]
+enum ObservationSettle {
+    #[default]
+    Idle,
+    Settling(PendingSceneObservation),
+}
+
+impl ObservationSettle {
+    fn replace(&mut self, observation: PendingSceneObservation) {
+        *self = Self::Settling(observation);
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match self { Self::Idle => None, Self::Settling(observation) => Some(observation.settle_after) }
+    }
+
+    fn take(&mut self) -> Option<PendingSceneObservation> {
+        match std::mem::take(self) { Self::Idle => None, Self::Settling(observation) => Some(observation) }
+    }
+}
+
 struct LateCanceledObservation {
     generation: u64,
     dispatch_sequence: u64,
@@ -201,9 +223,32 @@ struct LateCanceledObservation {
     expires_at: Instant,
 }
 
+enum LateObservationState {
+    Retained(LateCanceledObservation),
+    Consumed,
+    Expired,
+}
+
+impl LateObservationState {
+    fn expire(&mut self, now: Instant) {
+        if matches!(self, Self::Retained(entry) if now >= entry.expires_at) {
+            *self = Self::Expired;
+        }
+    }
+
+    fn matches(&self, observation: &PendingSceneObservation) -> bool {
+        matches!(self, Self::Retained(entry)
+            if entry.generation == observation.generation
+                && observation.sequence > entry.dispatch_sequence
+                && entry.scene == observation.scene)
+    }
+
+    fn retained(&self) -> bool { matches!(self, Self::Retained(_)) }
+}
+
 #[derive(Default)]
 struct LateCanceledObservations {
-    entries: VecDeque<LateCanceledObservation>,
+    entries: VecDeque<LateObservationState>,
 }
 
 impl LateCanceledObservations {
@@ -233,29 +278,29 @@ impl LateCanceledObservations {
         if self.entries.len() == LATE_CANCELED_OBSERVATION_CAPACITY {
             self.entries.pop_front();
         }
-        self.entries.push_back(LateCanceledObservation {
+        self.entries.push_back(LateObservationState::Retained(LateCanceledObservation {
             generation,
             dispatch_sequence,
             scene,
             expires_at: now + LATE_CANCELED_OBSERVATION_TTL,
-        });
+        }));
     }
 
     fn suppresses(&mut self, observation: &PendingSceneObservation, now: Instant) -> bool {
         self.purge(now);
-        let Some(index) = self.entries.iter().position(|entry| {
-            entry.generation == observation.generation
-                && observation.sequence > entry.dispatch_sequence
-                && entry.scene == observation.scene
-        }) else {
+        let Some(index) = self.entries.iter().position(|entry| entry.matches(observation)) else {
             return false;
         };
+        self.entries[index] = LateObservationState::Consumed;
         self.entries.remove(index);
         true
     }
 
     fn purge(&mut self, now: Instant) {
-        self.entries.retain(|entry| entry.expires_at > now);
+        for entry in &mut self.entries {
+            entry.expire(now);
+        }
+        self.entries.retain(LateObservationState::retained);
     }
 
     fn clear(&mut self) {
@@ -281,7 +326,7 @@ pub(super) struct BeforeFadeHandoff {
 pub(super) struct RecallCoordinator {
     in_flight: Option<InFlightRecall>,
     waiting: VecDeque<QueuedRecall>,
-    pending_observation: Option<PendingSceneObservation>,
+    pending_observation: ObservationSettle,
     late_canceled_observations: LateCanceledObservations,
 }
 
@@ -293,15 +338,13 @@ impl RecallCoordinator {
         scene: SceneState,
         now: Instant,
     ) {
-        self.pending_observation = Some(PendingSceneObservation::new(
+        self.pending_observation.replace(PendingSceneObservation::new(
             generation, sequence, scene, now,
         ));
     }
 
     pub fn pending_observation_deadline(&self) -> Option<Instant> {
-        self.pending_observation
-            .as_ref()
-            .map(|observation| observation.settle_after)
+        self.pending_observation.deadline()
     }
 
     pub fn take_pending_observation(&mut self) -> Option<PendingSceneObservation> {
@@ -309,7 +352,7 @@ impl RecallCoordinator {
     }
 
     pub fn clear_pending_observation(&mut self) {
-        self.pending_observation = None;
+        self.pending_observation = ObservationSettle::Idle;
     }
 
     pub fn clear_late_observations(&mut self) {
@@ -503,7 +546,7 @@ impl RecallCoordinator {
      * reply into a failure.
      */
     pub fn cancel(&mut self, reason: &str, emit_log: bool) -> bool {
-        self.pending_observation = None;
+        self.pending_observation = ObservationSettle::Idle;
         let in_flight = self.in_flight.take();
         let had_in_flight = in_flight.is_some();
         if let Some(in_flight) = in_flight {
@@ -1251,6 +1294,35 @@ mod tests {
             Err(AppCommandError::CommandFailed(message))
                 if message == "timed out waiting for fresh LV1 scene to match recalled scene 1: Intro"
         ));
+    }
+
+    #[test]
+    fn newer_observation_restarts_settle_and_is_consumed_once() {
+        let now = Instant::now();
+        let mut coordinator = RecallCoordinator::default();
+        coordinator.observe_scene(1, 10, SceneState { index: 1, name: "Intro".into() }, now);
+        let later = now + Duration::from_millis(10);
+        coordinator.observe_scene(1, 11, SceneState { index: 2, name: "Verse".into() }, later);
+
+        assert_eq!(coordinator.pending_observation_deadline(), Some(later + SCENE_CHANGED_SETTLE_DELAY));
+        let observation = coordinator.take_pending_observation().unwrap();
+        assert_eq!(observation.scene.index, 2);
+        assert_eq!(observation.sequence, 11);
+        assert!(coordinator.take_pending_observation().is_none());
+    }
+
+    #[test]
+    fn late_observation_is_consumed_once_and_expires_at_the_boundary() {
+        let now = Instant::now();
+        let scene = SceneState { index: 1, name: "Intro".into() };
+        let observation = PendingSceneObservation::new(1, 11, scene.clone(), now);
+        let mut canceled = LateCanceledObservations::default();
+        canceled.record(1, 10, scene.clone(), now);
+        assert!(canceled.suppresses(&observation, now));
+        assert!(!canceled.suppresses(&observation, now));
+
+        canceled.record(1, 10, scene, now);
+        assert!(!canceled.suppresses(&observation, now + LATE_CANCELED_OBSERVATION_TTL));
     }
 
     #[test]

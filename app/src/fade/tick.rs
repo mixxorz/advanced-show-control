@@ -20,6 +20,44 @@ pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
 pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
 pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 
+#[derive(Debug, Clone, Copy)]
+enum OverrideEvidence {
+    Tracking,
+    OneDeviation,
+    Confirmed,
+}
+
+impl OverrideEvidence {
+    fn count(self) -> u8 {
+        match self {
+            Self::Tracking => 0,
+            Self::OneDeviation => 1,
+            Self::Confirmed => PAN_OVERRIDE_CONFIRMATION_COUNT,
+        }
+    }
+
+    fn observe(&mut self, deviated: bool) -> bool {
+        *self = match (*self, deviated) {
+            (_, false) => Self::Tracking,
+            (Self::Tracking, true) => Self::OneDeviation,
+            (Self::OneDeviation | Self::Confirmed, true) => Self::Confirmed,
+        };
+        matches!(self, Self::Confirmed)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InterpolationClock {
+    Running,
+    Paused { since: Instant },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FinishIntent {
+    AtDuration,
+    OnNextTick,
+}
+
 pub(crate) struct ActiveTarget {
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
@@ -27,12 +65,12 @@ pub(crate) struct ActiveTarget {
     pub(crate) target_value: f64,
     /// Last value sent — for override detection and min-delta suppression.
     pub(crate) expected_value: f64,
-    pub(crate) override_deviation_count: u8,
+    override_evidence: OverrideEvidence,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
-    paused_since: Option<Instant>,
-    finish_requested: bool,
+    clock: InterpolationClock,
+    finish: FinishIntent,
 }
 
 pub(crate) struct ActiveTargetInit {
@@ -53,34 +91,39 @@ impl ActiveTarget {
             start_value: init.start_value,
             target_value: init.target_value,
             expected_value: init.start_value,
-            override_deviation_count: 0,
+            override_evidence: OverrideEvidence::Tracking,
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
-            paused_since: None,
-            finish_requested: false,
+            clock: InterpolationClock::Running,
+            finish: FinishIntent::AtDuration,
         }
     }
 
+    pub(super) fn override_confirmation_count(&self) -> u8 {
+        self.override_evidence.count()
+    }
+
     pub(super) fn pause(&mut self, now: Instant) {
-        if self.paused_since.is_none() {
-            self.paused_since = Some(now);
+        if matches!(self.clock, InterpolationClock::Running) {
+            self.clock = InterpolationClock::Paused { since: now };
         }
     }
 
     pub(super) fn resume(&mut self, now: Instant) {
-        if let Some(paused_since) = self.paused_since.take() {
-            self.started_at += now.duration_since(paused_since);
+        if let InterpolationClock::Paused { since } = self.clock {
+            self.started_at += now.duration_since(since);
+            self.clock = InterpolationClock::Running;
         }
     }
 
     pub(crate) fn finish_on_next_tick(&mut self) {
-        self.finish_requested = true;
+        self.finish = FinishIntent::OnNextTick;
     }
 
     #[cfg(test)]
     pub(super) fn is_paused(&self) -> bool {
-        self.paused_since.is_some()
+        matches!(self.clock, InterpolationClock::Paused { .. })
     }
 
     /// @cc [owner:mixxorz,label:product] parameter-interpolation
@@ -104,7 +147,7 @@ impl ActiveTarget {
 
     /// Returns true if the fade has completed (t >= 1.0).
     pub(crate) fn is_done(&self, now: Instant) -> bool {
-        self.finish_requested || now.duration_since(self.started_at) >= self.duration
+        matches!(self.finish, FinishIntent::OnNextTick) || now.duration_since(self.started_at) >= self.duration
     }
 
     /// @cc [owner:mixxorz,label:safety;product] override-thresholds
@@ -133,13 +176,8 @@ impl ActiveTarget {
             return self.is_override(reported_value);
         }
 
-        if self.is_override(reported_value) {
-            self.override_deviation_count = self.override_deviation_count.saturating_add(1);
-            self.override_deviation_count >= PAN_OVERRIDE_CONFIRMATION_COUNT
-        } else {
-            self.override_deviation_count = 0;
-            false
-        }
+        let deviated = self.is_override(reported_value);
+        self.override_evidence.observe(deviated)
     }
 
     /// @cc [owner:mixxorz,label:product;safety] parameter-send-proposal
@@ -196,6 +234,21 @@ mod tests {
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
         })
+    }
+
+    #[test]
+    fn finishing_survives_repeated_pause_and_resume() {
+        let mut target = make_channel(-20.0, -10.0, 4_000);
+        let started = target.started_at;
+        target.pause(started + Duration::from_millis(100));
+        target.pause(started + Duration::from_millis(200));
+        target.finish_on_next_tick();
+        target.resume(started + Duration::from_millis(600));
+        assert_eq!(target.started_at, started + Duration::from_millis(500));
+        assert!(!target.is_paused());
+        assert!(target.is_done(started + Duration::from_millis(600)));
+        target.resume(started + Duration::from_millis(700));
+        assert_eq!(target.started_at, started + Duration::from_millis(500));
     }
 
     #[test]
@@ -409,11 +462,11 @@ mod tests {
         let mut target = make_pan_family_target(FadeParameter::Pan);
 
         assert!(!target.record_override_report(2.0));
-        assert_eq!(target.override_deviation_count, 1);
+        assert_eq!(target.override_confirmation_count(), 1);
 
         assert!(target.record_override_report(2.0));
         assert_eq!(
-            target.override_deviation_count,
+            target.override_confirmation_count(),
             PAN_OVERRIDE_CONFIRMATION_COUNT
         );
     }
@@ -423,13 +476,13 @@ mod tests {
         let mut target = make_pan_family_target(FadeParameter::Pan);
 
         assert!(!target.record_override_report(2.0));
-        assert_eq!(target.override_deviation_count, 1);
+        assert_eq!(target.override_confirmation_count(), 1);
 
         assert!(!target.record_override_report(1.0));
-        assert_eq!(target.override_deviation_count, 0);
+        assert_eq!(target.override_confirmation_count(), 0);
 
         assert!(!target.record_override_report(2.0));
-        assert_eq!(target.override_deviation_count, 1);
+        assert_eq!(target.override_confirmation_count(), 1);
     }
 
     #[test]
@@ -442,7 +495,7 @@ mod tests {
         let reported_db = pos_to_db(over_pos);
 
         assert!(target.record_override_report(reported_db));
-        assert_eq!(target.override_deviation_count, 0);
+        assert_eq!(target.override_confirmation_count(), 0);
     }
 
     #[test]

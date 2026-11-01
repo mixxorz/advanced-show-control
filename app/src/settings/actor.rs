@@ -7,7 +7,7 @@ use crate::runtime::events::{AppEvent, AppEventBus};
 use super::SettingsHandle;
 use super::commands::{SettingsCommand, SettingsCommandResult};
 use super::events::SettingsEvent;
-use super::state::SettingsState;
+use super::state::{SettingsPreparation, SettingsState};
 use super::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 pub struct SettingsActorTask {
@@ -136,8 +136,8 @@ async fn handle_command(
                     .map_err(|error| format!("Settings preparation task failed: {error}"))
                     .and_then(|result| result);
             let result = match staged {
-                Ok(Some(staged)) => state.publish_staged(staged).map(|()| true),
-                Ok(None) => Ok(false),
+                Ok(SettingsPreparation::Staged(staged)) => state.publish_staged(*staged).map(|()| true),
+                Ok(SettingsPreparation::Unchanged) => Ok(false),
                 Err(error) => Err(error),
             };
             let result = match result {
@@ -197,15 +197,15 @@ async fn handle_command(
             .and_then(|result| result);
 
             let result = match staged {
-                Ok(Some(staged)) => {
+                Ok(SettingsPreparation::Staged(staged)) => {
                     // Keep only the atomic rename and in-memory update inside the generation fence;
                     // serialization, temporary-file writes, and sync completed before acquiring it.
                     runtime_generation
-                        .if_current(expected_generation, || state.publish_staged(staged))
+                        .if_current(expected_generation, || state.publish_staged(*staged))
                         .await
                         .unwrap_or(Ok(()))
                 }
-                Ok(None) => Ok(()),
+                Ok(SettingsPreparation::Unchanged) => Ok(()),
                 Err(error) => Err(error),
             };
             let _ = reply.send(result);

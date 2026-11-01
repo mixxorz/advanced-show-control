@@ -10,6 +10,7 @@ use crate::projector::AppViewState;
 use crate::settings::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 use super::CommandDispatcher;
+use super::state::{DeferredCommit, ProjectedEdit};
 use super::clipped_overlay::vertical_scrollbar_overlay;
 use super::keyboard::{CaptureResult, ShortcutCapture, normalized_physical_key, shortcuts_equal};
 use super::numeric_control::editable_numeric_control;
@@ -42,21 +43,26 @@ impl NumericSetting {
     }
 }
 
+#[derive(Default)]
+enum ShortcutRecording {
+    #[default]
+    Idle,
+    Capturing { action: ShortcutAction, capture: ShortcutCapture },
+    Conflict { action: ShortcutAction, message: String },
+}
+
 pub struct SettingsView {
     snapshot: AppViewState,
     scroll: ScrollHandle,
-    draft: Option<AppSettings>,
-    pending_command_id: Option<u64>,
+    edit: ProjectedEdit<AppSettings>,
     dispatcher: CommandDispatcher,
     focus: FocusHandle,
-    capture: ShortcutCapture,
-    capture_action: Option<ShortcutAction>,
-    shortcut_conflict: Option<(ShortcutAction, String)>,
+    recording: ShortcutRecording,
     sensitivity_input: Entity<InputState>,
     threshold_input: Entity<InputState>,
     recall_interval_input: Entity<InputState>,
     numeric_identity: (u8, u64, u64),
-    numeric_edit_revisions: [u64; 3],
+    numeric_edits: [DeferredCommit; 3],
     _numeric_subscriptions: Vec<Subscription>,
 }
 
@@ -106,33 +112,28 @@ impl SettingsView {
         Self {
             snapshot,
             scroll: ScrollHandle::default(),
-            draft: None,
-            pending_command_id: None,
+            edit: ProjectedEdit::default(),
             dispatcher,
             focus: cx.focus_handle(),
-            capture: ShortcutCapture::default(),
-            capture_action: None,
-            shortcut_conflict: None,
+            recording: ShortcutRecording::Idle,
             sensitivity_input,
             threshold_input,
             recall_interval_input,
             numeric_identity,
-            numeric_edit_revisions: [0; 3],
+            numeric_edits: [DeferredCommit::default(); 3],
             _numeric_subscriptions: numeric_subscriptions,
         }
     }
 
     pub fn capture_active(&self) -> bool {
-        self.capture.active_id().is_some()
+        matches!(&self.recording, ShortcutRecording::Capturing { capture, .. } if capture.active_id().is_some())
     }
 
     pub fn cancel_capture(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.capture_active() {
             return false;
         }
-        self.capture = ShortcutCapture::default();
-        self.capture_action = None;
-        self.shortcut_conflict = None;
+        self.recording = ShortcutRecording::Idle;
         cx.notify();
         true
     }
@@ -144,9 +145,8 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.draft.as_ref() == Some(&snapshot.settings) {
-            self.draft = None;
-            self.pending_command_id = None;
+        if self.edit.value() == Some(&snapshot.settings) {
+            self.edit.clear();
         }
         self.snapshot = snapshot;
         let numeric_identity = (
@@ -183,16 +183,18 @@ impl SettingsView {
     }
 
     fn settings(&self) -> &AppSettings {
-        self.draft.as_ref().unwrap_or(&self.snapshot.settings)
+        self.edit.value().unwrap_or(&self.snapshot.settings)
     }
 
     fn replace(&mut self, settings: AppSettings, cx: &mut Context<Self>) {
-        self.draft = Some(settings.clone());
-        self.shortcut_conflict = None;
-        self.pending_command_id =
-            Some(self.dispatcher.dispatch_serial(move |commands| async move {
-                commands.replace_app_settings(settings).await.map(|_| ())
-            }));
+        let draft = settings.clone();
+        if matches!(self.recording, ShortcutRecording::Conflict { .. }) {
+            self.recording = ShortcutRecording::Idle;
+        }
+        let command_id = self.dispatcher.dispatch_serial(move |commands| async move {
+            commands.replace_app_settings(settings).await.map(|_| ())
+        });
+        self.edit.submit(command_id, draft);
         cx.notify();
     }
 
@@ -203,9 +205,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if failed && self.pending_command_id == Some(command_id) {
-            self.draft = None;
-            self.pending_command_id = None;
+        if self.edit.complete(command_id, failed) {
             self.sync_numeric_inputs(window, cx);
             cx.notify();
         }
@@ -223,26 +223,28 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.capture.start(match action {
+        let mut capture = ShortcutCapture::default();
+        capture.start(match action {
             ShortcutAction::Go => "go",
             ShortcutAction::Cue => "cue",
         });
-        self.capture_action = Some(action);
-        self.shortcut_conflict = None;
+        self.recording = ShortcutRecording::Capturing { action, capture };
         window.focus(&self.focus, cx);
         cx.notify();
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let result = self.capture.route(event);
-        match result {
+        let ShortcutRecording::Capturing { action, capture } = &mut self.recording else {
+            return;
+        };
+        let action = *action;
+        match capture.route(event) {
             CaptureResult::Inactive => return,
             CaptureResult::Pending => {}
-            CaptureResult::Cancelled => self.capture_action = None,
+            CaptureResult::Cancelled => self.recording = ShortcutRecording::Idle,
             CaptureResult::Captured(shortcut) => {
-                if let Some(action) = self.capture_action.take() {
-                    self.apply_shortcut(action, shortcut, cx);
-                }
+                self.recording = ShortcutRecording::Idle;
+                self.apply_shortcut(action, shortcut, cx);
             }
         }
         cx.stop_propagation();
@@ -256,7 +258,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         if let Some(label) = shortcut_conflict_label(action, &shortcut, self.settings()) {
-            self.shortcut_conflict = Some((action, format!("Already assigned to {label}")));
+            self.recording = ShortcutRecording::Conflict { action, message: format!("Already assigned to {label}") };
             return;
         }
         self.update(cx, |settings| match action {
@@ -300,9 +302,9 @@ impl SettingsView {
         match event {
             InputEvent::PressEnter { .. } => self.commit_numeric(setting, window, cx),
             InputEvent::Blur => {
-                let revision = self.numeric_edit_revisions[setting.index()];
+                let revision = self.numeric_edits[setting.index()].schedule();
                 cx.on_next_frame(window, move |this, window, cx| {
-                    if this.numeric_edit_revisions[setting.index()] == revision {
+                    if this.numeric_edits[setting.index()].take_scheduled(revision) {
                         this.commit_numeric(setting, window, cx);
                     }
                 });
@@ -346,8 +348,7 @@ impl SettingsView {
                 format_milliseconds(value)
             }
         };
-        self.numeric_edit_revisions[setting.index()] =
-            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        self.numeric_edits[setting.index()].cancel();
         self.reset_numeric(setting, formatted, window, cx);
         if &settings != self.settings() {
             self.numeric_identity = (
@@ -389,8 +390,7 @@ impl SettingsView {
                 format_milliseconds(value)
             }
         };
-        self.numeric_edit_revisions[setting.index()] =
-            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        self.numeric_edits[setting.index()].cancel();
         self.reset_numeric(setting, formatted, window, cx);
         if next != current {
             self.numeric_identity = (
@@ -408,8 +408,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.numeric_edit_revisions[setting.index()] =
-            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        self.numeric_edits[setting.index()].cancel();
         let value = match setting {
             NumericSetting::Sensitivity => self.settings().fader_override_sensitivity.to_string(),
             NumericSetting::SameSceneThreshold => {
@@ -499,12 +498,11 @@ impl SettingsView {
             ShortcutAction::Go => ("go-shortcut", "GO"),
             ShortcutAction::Cue => ("cue-shortcut", "CUE"),
         };
-        let capturing = self.capture_action == Some(action) && self.capture.active_id().is_some();
-        let conflict = self
-            .shortcut_conflict
-            .as_ref()
-            .filter(|(conflict_action, _)| *conflict_action == action)
-            .map(|(_, message)| message.clone());
+        let capturing = matches!(self.recording, ShortcutRecording::Capturing { action: current, .. } if current == action);
+        let conflict = match &self.recording {
+            ShortcutRecording::Conflict { action: current, message } if *current == action => Some(message.clone()),
+            _ => None,
+        };
         setting_row(
             label,
             div()

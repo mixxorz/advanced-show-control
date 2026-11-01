@@ -45,14 +45,14 @@ impl SettingsState {
     pub(crate) fn stage_settings(
         &self,
         settings: AppSettings,
-    ) -> Result<Option<StagedSettingsUpdate>, String> {
+    ) -> Result<SettingsPreparation, String> {
         let normalized = settings.normalized();
         if normalized == self.document.settings {
-            return Ok(None);
+            return Ok(SettingsPreparation::Unchanged);
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        StagedSettingsUpdate::prepare(&self.file_path, updated).map(Some)
+        StagedSettingsUpdate::prepare(&self.file_path, updated).map(|staged| SettingsPreparation::Staged(Box::new(staged)))
     }
 
     pub fn last_connected_lv1(&self) -> Option<Lv1SystemIdentity> {
@@ -65,30 +65,38 @@ impl SettingsState {
     pub(crate) fn stage_last_connected_lv1(
         &self,
         identity: Lv1SystemIdentity,
-    ) -> Result<Option<StagedSettingsUpdate>, String> {
+    ) -> Result<SettingsPreparation, String> {
         if self.document.last_connected_lv1.as_ref() == Some(&identity) {
-            return Ok(None);
+            return Ok(SettingsPreparation::Unchanged);
         }
 
         let mut updated = self.document.clone();
         updated.last_connected_lv1 = Some(identity);
-        StagedSettingsUpdate::prepare(&self.file_path, updated).map(Some)
+        StagedSettingsUpdate::prepare(&self.file_path, updated).map(|staged| SettingsPreparation::Staged(Box::new(staged)))
     }
 
     /// @cc [owner:mixxorz,label:data-integrity] publish-settings-after-file
     /// Publication MUST replace `settings.json` before committing the staged document to memory;
     /// replacement failure MUST return an explanatory error and retain the previous memory state.
     pub(crate) fn publish_staged(&mut self, staged: StagedSettingsUpdate) -> Result<(), String> {
-        staged.file.publish().map_err(|err| {
+        let PublishedSettings(document) = staged.publish().map_err(|err| {
             format!(
                 "Failed to publish settings {}: {err}",
                 self.file_path.display()
             )
         })?;
-        self.document = staged.document;
+        self.document = document;
         Ok(())
     }
 }
+
+pub(crate) enum SettingsPreparation {
+    Unchanged,
+    Staged(Box<StagedSettingsUpdate>),
+}
+
+// Only a successfully published file can provide a document for the in-memory commit.
+struct PublishedSettings(PersistedSettings);
 
 pub(crate) struct StagedSettingsUpdate {
     document: PersistedSettings,
@@ -96,6 +104,11 @@ pub(crate) struct StagedSettingsUpdate {
 }
 
 impl StagedSettingsUpdate {
+    fn publish(self) -> std::io::Result<PublishedSettings> {
+        self.file.publish()?;
+        Ok(PublishedSettings(self.document))
+    }
+
     fn prepare(file_path: &Path, document: PersistedSettings) -> Result<Self, String> {
         let contents = serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize settings: {err}"))?;

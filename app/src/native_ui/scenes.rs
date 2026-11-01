@@ -13,6 +13,7 @@ use gpui_kit::{
 use uuid::Uuid;
 
 use crate::native_ui::CommandDispatcher;
+use super::state::{DeferredCommit, ProjectedEdit};
 use crate::native_ui::button::bordered_button;
 use crate::native_ui::clipped_overlay::vertical_scrollbar_overlay;
 use crate::native_ui::numeric_control::editable_numeric_control;
@@ -37,6 +38,38 @@ struct PendingOverwrite {
     target_name: String,
 }
 
+#[derive(Default)]
+enum OverwriteConfirmation {
+    #[default]
+    Closed,
+    Awaiting { request: PendingOverwrite, return_focus: Option<FocusHandle> },
+    RestoringFocus(Option<FocusHandle>),
+}
+
+impl OverwriteConfirmation {
+    fn request(&self) -> Option<&PendingOverwrite> {
+        match self { Self::Awaiting { request, .. } => Some(request), _ => None }
+    }
+
+    fn take_request(&mut self) -> Option<PendingOverwrite> {
+        if !matches!(self, Self::Awaiting { .. }) { return None; }
+        match std::mem::take(self) {
+            Self::Awaiting { request, return_focus } => {
+                *self = Self::RestoringFocus(return_focus);
+                Some(request)
+            }
+            _ => unreachable!("phase checked above"),
+        }
+    }
+
+    fn finish_focus(&mut self) -> Option<FocusHandle> {
+        match std::mem::take(self) {
+            Self::RestoringFocus(focus) => focus,
+            state => { *self = state; None }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SceneRowState {
     current: bool,
@@ -52,12 +85,11 @@ pub struct ScenesView {
     dispatcher: CommandDispatcher,
     duration_input: Entity<InputState>,
     duration_identity: Option<(Uuid, u64)>,
-    duration_edit_revision: u64,
-    pending_duration_command: Option<(u64, Uuid, u64)>,
+    duration_edit: DeferredCommit,
+    duration_command: ProjectedEdit<(Uuid, u64)>,
     selected_link_target: Option<i32>,
-    pending_overwrite: Option<PendingOverwrite>,
+    overwrite: OverwriteConfirmation,
     overwrite_focus: FocusHandle,
-    overwrite_return_focus: Option<FocusHandle>,
     _duration_subscription: Subscription,
 }
 
@@ -79,9 +111,9 @@ impl ScenesView {
             |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { .. } => this.commit_duration(window, cx),
                 InputEvent::Blur => {
-                    let revision = this.duration_edit_revision;
+                    let revision = this.duration_edit.schedule();
                     cx.on_next_frame(window, move |this, window, cx| {
-                        if this.duration_edit_revision == revision {
+                        if this.duration_edit.take_scheduled(revision) {
                             this.commit_duration(window, cx);
                         }
                     });
@@ -98,22 +130,21 @@ impl ScenesView {
             dispatcher,
             duration_input,
             duration_identity,
-            duration_edit_revision: 0,
-            pending_duration_command: None,
+            duration_edit: DeferredCommit::default(),
+            duration_command: ProjectedEdit::default(),
             selected_link_target,
-            pending_overwrite: None,
+            overwrite: OverwriteConfirmation::Closed,
             overwrite_focus: cx.focus_handle(),
-            overwrite_return_focus: None,
             _duration_subscription: subscription,
         }
     }
 
     pub fn modal_open(&self) -> bool {
-        self.pending_overwrite.is_some()
+        self.overwrite.request().is_some()
     }
 
     pub fn dismiss_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.pending_overwrite.take().is_none() {
+        if self.overwrite.take_request().is_none() {
             return false;
         }
         self.restore_overwrite_focus(window, cx);
@@ -122,7 +153,7 @@ impl ScenesView {
     }
 
     fn restore_overwrite_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(focus) = self.overwrite_return_focus.take() {
+        if let Some(focus) = self.overwrite.finish_focus() {
             focus.focus(window, cx);
         } else {
             window.blur(cx);
@@ -140,15 +171,14 @@ impl ScenesView {
             selected_scene(&snapshot).map(|scene| (scene.internal_scene_id, scene.duration_ms));
         let next_scene_id = next_duration_identity.map(|(id, _)| id);
         let preserve_pending_draft = preserve_pending_duration_draft(
-            self.pending_duration_command
-                .map(|(_, scene_id, target)| (scene_id, target)),
+            self.duration_command.value().copied(),
             next_duration_identity,
         );
         if self
-            .pending_duration_command
-            .is_some_and(|(_, scene_id, target)| next_duration_identity == Some((scene_id, target)))
+            .duration_command.value()
+            .is_some_and(|&(scene_id, target)| next_duration_identity == Some((scene_id, target)))
         {
-            self.pending_duration_command = None;
+            self.duration_command.clear();
         }
         if next_duration_identity != self.duration_identity {
             if !preserve_pending_draft {
@@ -161,7 +191,7 @@ impl ScenesView {
         }
 
         if previous_scene_id != next_scene_id {
-            self.pending_duration_command = None;
+            self.duration_command.clear();
         }
         if previous_scene_id != next_scene_id
             || !snapshot
@@ -171,15 +201,15 @@ impl ScenesView {
         {
             self.selected_link_target = default_link_target(&snapshot);
         }
-        let overwrite_was_open = self.pending_overwrite.is_some();
-        self.pending_overwrite = self.pending_overwrite.take().filter(|pending| {
-            selected_scene(&snapshot)
+        let invalid_overwrite = self.overwrite.request().is_some_and(|pending| {
+            !selected_scene(&snapshot)
                 .is_some_and(|scene| scene.internal_scene_id == pending.source_id)
-                && snapshot.scenes.iter().any(|scene| {
+                || !snapshot.scenes.iter().any(|scene| {
                     scene.index == pending.target_index && scene.name == pending.target_name
                 })
         });
-        if overwrite_was_open && self.pending_overwrite.is_none() {
+        if invalid_overwrite {
+            self.overwrite.take_request();
             self.restore_overwrite_focus(window, cx);
         }
         self.snapshot = snapshot;
@@ -187,7 +217,7 @@ impl ScenesView {
     }
 
     fn commit_duration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
+        self.duration_edit.cancel();
         let Some(scene) = selected_scene(&self.snapshot) else {
             return;
         };
@@ -199,15 +229,15 @@ impl ScenesView {
             return;
         };
         let pending_target = self
-            .pending_duration_command
-            .filter(|(_, pending_scene, _)| *pending_scene == scene_id)
-            .map(|(_, _, target)| target);
+            .duration_command.value()
+            .filter(|(pending_scene, _)| *pending_scene == scene_id)
+            .map(|(_, target)| *target);
         if !duration_update_requires_dispatch(duration_ms, projected, pending_target) {
             self.reset_duration(duration_ms, window, cx);
             return;
         }
         let command_id = self.dispatch_duration(scene_id, duration_ms);
-        self.pending_duration_command = Some((command_id, scene_id, duration_ms));
+        self.duration_command.submit(command_id, (scene_id, duration_ms));
         self.reset_duration(duration_ms, window, cx);
     }
 
@@ -228,16 +258,11 @@ impl ScenesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((pending_id, scene_id, _)) = self.pending_duration_command else {
+        let Some(&(scene_id, _)) = self.duration_command.value() else {
             return;
         };
-        if pending_id != command_id {
-            return;
-        }
-        if failed {
-            self.pending_duration_command = None;
-        }
-        if failed
+        let discarded = self.duration_command.complete(command_id, failed);
+        if discarded
             && let Some(scene) = selected_scene(&self.snapshot)
             && scene.internal_scene_id == scene_id
         {
@@ -252,7 +277,7 @@ impl ScenesView {
     }
 
     fn discard_duration_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
+        self.duration_edit.cancel();
         if let Some(scene) = selected_scene(&self.snapshot) {
             self.reset_duration(scene.duration_ms, window, cx);
         }
@@ -407,7 +432,7 @@ impl ScenesView {
                 editor.child(self.render_link_controls(scene, cx))
             })
             .child(self.render_scope(scene, cx))
-            .when_some(self.pending_overwrite.as_ref(), |editor, pending| {
+            .when_some(self.overwrite.request(), |editor, pending| {
                 editor.child(self.render_overwrite(pending, cx))
             })
     }
@@ -484,7 +509,7 @@ impl ScenesView {
                             this.step_duration_control(1, window, cx)
                         }),
                         cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if this.pending_overwrite.is_none()
+                            if this.overwrite.request().is_none()
                                 && super::keyboard::normalized_physical_key(&event.keystroke)
                                     == "Escape"
                             {
@@ -509,14 +534,14 @@ impl ScenesView {
         let projected = scene.duration_ms;
         let draft = self.duration_input.read(cx).value().to_string();
         let next = stepped_duration(&draft, projected, direction);
-        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
+        self.duration_edit.cancel();
         let pending_target = self
-            .pending_duration_command
-            .filter(|(_, pending_scene, _)| *pending_scene == scene_id)
-            .map(|(_, _, target)| target);
+            .duration_command.value()
+            .filter(|(pending_scene, _)| *pending_scene == scene_id)
+            .map(|(_, target)| *target);
         if duration_update_requires_dispatch(next, projected, pending_target) {
             let command_id = self.dispatch_duration(scene_id, next);
-            self.pending_duration_command = Some((command_id, scene_id, next));
+            self.duration_command.submit(command_id, (scene_id, next));
         }
         self.reset_duration(next, window, cx);
     }
@@ -610,12 +635,14 @@ impl ScenesView {
             .iter()
             .any(|config| config.scene_index == Some(target_index))
         {
-            self.overwrite_return_focus = window.focused(cx);
-            self.pending_overwrite = Some(PendingOverwrite {
-                source_id,
-                target_index,
-                target_name: target.name.clone(),
-            });
+            self.overwrite = OverwriteConfirmation::Awaiting {
+                request: PendingOverwrite {
+                    source_id,
+                    target_index,
+                    target_name: target.name.clone(),
+                },
+                return_focus: window.focused(cx),
+            };
             self.overwrite_focus.focus(window, cx);
             cx.notify();
             return;
@@ -702,7 +729,7 @@ impl ScenesView {
                                 bordered_button("cancel-overwrite")
                                     .label("CANCEL")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.pending_overwrite = None;
+                                        this.overwrite.take_request();
                                         this.restore_overwrite_focus(window, cx);
                                         cx.notify();
                                     })),
@@ -720,7 +747,7 @@ impl ScenesView {
     }
 
     fn confirm_overwrite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pending) = self.pending_overwrite.take() else {
+        let Some(pending) = self.overwrite.take_request() else {
             return;
         };
         let exact_target_exists =

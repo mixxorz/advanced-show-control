@@ -174,6 +174,65 @@ fn build_scenes_actor_with_before_fade_handoff(
     (handle, task, peers)
 }
 
+#[derive(Clone, Copy)]
+enum CommandStream {
+    Open,
+    Closed,
+}
+
+impl CommandStream {
+    fn is_open(self) -> bool { matches!(self, Self::Open) }
+    fn close(&mut self) { *self = Self::Closed; }
+}
+
+#[derive(Default)]
+enum StoreState {
+    #[default]
+    Idle,
+    Fetching(PendingSnapshotOperation),
+}
+
+impl StoreState {
+    fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
+    fn fetching(&mut self) -> &mut PendingSnapshotOperation {
+        match self { Self::Fetching(operation) => operation, Self::Idle => unreachable!("store is idle") }
+    }
+    fn take(&mut self) -> Option<PendingSnapshotOperation> {
+        match std::mem::take(self) { Self::Idle => None, Self::Fetching(operation) => Some(operation) }
+    }
+}
+
+#[derive(Default)]
+enum LagRecoveryState {
+    #[default]
+    Idle,
+    Refreshing(PendingLagRecovery),
+}
+
+impl LagRecoveryState {
+    fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
+    fn refreshing(&mut self) -> &mut PendingLagRecovery {
+        match self { Self::Refreshing(operation) => operation, Self::Idle => unreachable!("recovery is idle") }
+    }
+    fn take(&mut self) -> Option<PendingLagRecovery> {
+        match std::mem::take(self) { Self::Idle => None, Self::Refreshing(operation) => Some(operation) }
+    }
+}
+
+#[derive(Default)]
+enum SceneCommandLane {
+    #[default]
+    Ready,
+    Deferred(ScenesCommand),
+}
+
+impl SceneCommandLane {
+    fn is_ready(&self) -> bool { matches!(self, Self::Ready) }
+    fn take(&mut self) -> Option<ScenesCommand> {
+        match std::mem::take(self) { Self::Ready => None, Self::Deferred(command) => Some(command) }
+    }
+}
+
 /**
  * @cc [owner:mixxorz,label:safety] event-bus-lag-fails-closed
  * On event-bus lag, the actor MUST synchronously drain queued facts, reconcile the active
@@ -213,14 +272,14 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut scene_library_status = SceneLibraryStatus::AwaitingPeers;
     let mut recall_state = ScenesState::default();
     let mut cues = crate::cue_lists::operations::CueLists::new(event_bus.clone());
-    let mut cue_commands_open = true;
-    let mut scene_commands_open = true;
-    let mut held_scene_command: Option<ScenesCommand> = None;
+    let mut cue_commands_open = CommandStream::Open;
+    let mut scene_commands_open = CommandStream::Open;
+    let mut held_scene_command = SceneCommandLane::Ready;
     let mut recall_coordinator = RecallCoordinator::default();
     let mut settings = event_bus.state().borrow().settings.clone();
-    let mut lockout_open = true;
-    let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
-    let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
+    let mut lockout_open = CommandStream::Open;
+    let mut pending_snapshot = StoreState::Idle;
+    let mut pending_lag_recovery = LagRecoveryState::Idle;
     let mut pending_recall: Option<PendingRecallOperation> = None;
     let mut scene_list_revision = 0_u64;
 
@@ -239,7 +298,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     // - Configurable repeat delay (500 ms default): Prevents the same scene from triggering two
     //                         consecutive recalls if a bounce or duplicate event arrives.
     loop {
-        if !scene_commands_open && !cue_commands_open {
+        if !scene_commands_open.is_open() && !cue_commands_open.is_open() {
             break;
         }
         let scene_ids: Vec<_> = recall_state
@@ -349,7 +408,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         settings = updated_settings;
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
-                        pending_lag_recovery = None;
+                        pending_lag_recovery = LagRecoveryState::Idle;
                         cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -373,7 +432,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
-                        pending_lag_recovery = None;
+                        pending_lag_recovery = LagRecoveryState::Idle;
                         cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -431,12 +490,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                         pending_lag_recovery = peers
                             .handles(active_generation)
                             .map(|handles| {
-                                PendingLagRecovery::new(
+                                LagRecoveryState::Refreshing(PendingLagRecovery::new(
                                     active_generation,
                                     scene_list_revision,
                                     handles.lv1,
-                                )
-                            });
+                                ))
+                            }).unwrap_or_default();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         recall_coordinator.cancel("scene recall event stream closed", true);
@@ -445,7 +504,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_recall.is_none() && cue_commands_open && !cues.recall_pending() => {
+            command = cue_commands.recv(), if pending_snapshot.is_idle() && pending_recall.is_none() && cue_commands_open.is_open() && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -467,7 +526,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             ));
                         }
                     }
-                    Some(crate::cue_lists::CueListsCommand::Shutdown) | None => cue_commands_open = false,
+                    Some(crate::cue_lists::CueListsCommand::Shutdown) | None => cue_commands_open.close(),
                     Some(command) => cues.dispatch(command, recall_state.scene_configs()),
                 }
             }
@@ -477,12 +536,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_recall.is_none()) || held_scene_command.is_none()) => {
+            }, if scene_commands_open.is_open() && ((pending_snapshot.is_idle() && pending_recall.is_none()) || held_scene_command.is_ready()) => {
                 let Some(command) = command else {
-                    scene_commands_open = false;
+                    scene_commands_open.close();
                     continue;
                 };
-                if pending_snapshot.is_some() || pending_recall.is_some() {
+                if !pending_snapshot.is_idle() || pending_recall.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: Scenes actor stopped");
@@ -494,7 +553,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                         break;
                     }
-                    held_scene_command = Some(command);
+                    held_scene_command = SceneCommandLane::Deferred(command);
                     continue;
                 }
                 let command = match command {
@@ -547,7 +606,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             }
                             continue;
                         };
-                        pending_snapshot = Some(PendingSnapshotOperation::store(
+                        pending_snapshot = StoreState::Fetching(PendingSnapshotOperation::store(
                             peer_handles.lv1,
                             internal_scene_id,
                             reply,
@@ -587,19 +646,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                     break;
                 }
             }
-            completion = async {
-                pending_recall
-                    .as_mut()
-                    .expect("enabled recall branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_recall.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
-                let operation = pending_recall
-                    .take()
-                    .expect("completed recall operation exists");
+            completion = PendingRecallOperation::complete(&mut pending_recall), if pending_recall.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 finish_pending_recall(
-                    operation,
                     completion,
                     &mut pending_recall,
                     &mut recall_coordinator,
@@ -616,13 +664,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                 ).await;
             }
             completion = async {
-                pending_lag_recovery
-                    .as_mut()
-                    .expect("enabled lag-recovery branch has an operation")
+                pending_lag_recovery.refreshing()
                     .future
                     .as_mut()
                     .await
-            }, if pending_lag_recovery.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
+            }, if !pending_lag_recovery.is_idle() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_lag_recovery
                     .take()
                     .expect("completed lag-recovery operation exists");
@@ -643,13 +689,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
             }
             completion = async {
-                pending_snapshot
-                    .as_mut()
-                    .expect("enabled pending snapshot branch has an operation")
+                pending_snapshot.fetching()
                     .future
                     .as_mut()
                     .await
-            }, if pending_snapshot.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
+            }, if !pending_snapshot.is_idle() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_snapshot
                     .take()
                     .expect("completed pending snapshot operation exists");
@@ -663,7 +707,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     &event_bus,
                 ).await;
             }
-            lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
+            lockout_changed = lockout.changed(), if lockout_open.is_open() => match lockout_changed {
                 Ok(true) => {
                     cancel_pending_recall(
                         pending_recall.take(),
@@ -680,7 +724,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         "lockout state is unavailable",
                     );
                     recall_coordinator.cancel("lockout state is unavailable", true);
-                    lockout_open = false;
+                    lockout_open.close();
                 }
             },
             _ = recall_timer, if recall_deadline.is_some() => {
@@ -736,7 +780,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         }
     }
 
-    if let Some(operation) = pending_snapshot {
+    if let Some(operation) = pending_snapshot.take() {
         operation.cancel("Store scene blocked: Scenes actor stopped");
     }
     cancel_pending_recall(
@@ -1124,15 +1168,34 @@ enum PendingRecallContext {
     Admission(PendingRecallAdmission),
     DispatchSnapshot(PendingRecallDispatch),
     DispatchCommand(PreparedRecallDispatch),
-    ObservationSnapshot(PreparedSceneObservation),
-    ObservationHandoff,
+    Observation,
 }
 
-enum PendingRecallCompletion {
-    Snapshot(Result<Lv1StateSnapshot, AppCommandError>),
-    Dispatch(Result<RecallSceneDispatch, AppCommandError>),
-    ObservationSnapshot(Result<Lv1StateSnapshot, AppCommandError>),
-    ObservationHandoff(ObservationHandoffCompletion),
+enum CompletedRecallOperation {
+    Admission { generation: u64, admission: PendingRecallAdmission, result: Result<Lv1StateSnapshot, AppCommandError> },
+    DispatchSnapshot { generation: u64, dispatch: PendingRecallDispatch, result: Result<Lv1StateSnapshot, AppCommandError> },
+    DispatchCommand { generation: u64, prepared: PreparedRecallDispatch, result: Result<RecallSceneDispatch, AppCommandError> },
+    ObservationSnapshot { generation: u64, prepared: PreparedSceneObservation, result: Result<Lv1StateSnapshot, AppCommandError> },
+    ObservationHandoff { generation: u64, completion: ObservationHandoffCompletion },
+}
+
+impl CompletedRecallOperation {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Admission { generation, .. } | Self::DispatchSnapshot { generation, .. }
+            | Self::DispatchCommand { generation, .. } | Self::ObservationSnapshot { generation, .. }
+            | Self::ObservationHandoff { generation, .. } => *generation,
+        }
+    }
+
+    fn into_context(self) -> PendingRecallContext {
+        match self {
+            Self::Admission { admission, .. } => PendingRecallContext::Admission(admission),
+            Self::DispatchSnapshot { dispatch, .. } => PendingRecallContext::DispatchSnapshot(dispatch),
+            Self::DispatchCommand { prepared, .. } => PendingRecallContext::DispatchCommand(prepared),
+            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => PendingRecallContext::Observation,
+        }
+    }
 }
 
 /**
@@ -1143,34 +1206,103 @@ enum PendingRecallCompletion {
  * consume its coordinator token where present and drop all external waits before stale completion
  * can dispatch LV1, publish or admit Fade work, or report current success.
  */
-struct PendingRecallOperation {
-    generation: u64,
-    context: PendingRecallContext,
-    future: Pin<Box<dyn Future<Output = PendingRecallCompletion> + Send>>,
+enum PendingRecallOperation {
+    Admission {
+        generation: u64,
+        admission: PendingRecallAdmission,
+        future: SnapshotFuture,
+    },
+    DispatchSnapshot {
+        generation: u64,
+        dispatch: PendingRecallDispatch,
+        future: SnapshotFuture,
+    },
+    DispatchCommand {
+        generation: u64,
+        prepared: PreparedRecallDispatch,
+        future: Pin<Box<dyn Future<Output = Result<RecallSceneDispatch, AppCommandError>> + Send>>,
+    },
+    ObservationSnapshot {
+        generation: u64,
+        prepared: PreparedSceneObservation,
+        future: SnapshotFuture,
+    },
+    ObservationHandoff {
+        generation: u64,
+        future: Pin<Box<dyn Future<Output = ObservationHandoffCompletion> + Send>>,
+    },
 }
+
+type SnapshotFuture = Pin<Box<dyn Future<Output = Result<Lv1StateSnapshot, AppCommandError>> + Send>>;
 
 impl PendingRecallOperation {
     fn snapshot_for_admission(lv1: Lv1Connection, admission: PendingRecallAdmission) -> Self {
-        Self::explicit_snapshot(lv1, PendingRecallContext::Admission(admission))
+        Self::Admission {
+            generation: lv1.generation(),
+            admission,
+            future: Self::explicit_snapshot(lv1),
+        }
     }
 
-    fn explicit_snapshot(lv1: Lv1Connection, context: PendingRecallContext) -> Self {
-        let generation = lv1.generation();
-        Self {
-            generation,
-            context,
-            future: Box::pin(async move {
-                let result = lv1
-                    .request(|reply| Lv1Command::GetState { reply })
-                    .await
-                    .map_err(|error| match error {
-                        AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                            "Recall blocked: LV1 state is unavailable".to_string(),
-                        ),
-                        other => other,
-                    });
-                PendingRecallCompletion::Snapshot(result)
-            }),
+    fn explicit_snapshot(lv1: Lv1Connection) -> SnapshotFuture {
+        Box::pin(async move {
+            lv1.request(|reply| Lv1Command::GetState { reply })
+                .await
+                .map_err(|error| match error {
+                    AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                        "Recall blocked: LV1 state is unavailable".to_string(),
+                    ),
+                    other => other,
+                })
+        })
+    }
+
+    fn snapshot_for_dispatch(lv1: Lv1Connection, dispatch: PendingRecallDispatch) -> Self {
+        Self::DispatchSnapshot {
+            generation: lv1.generation(),
+            dispatch,
+            future: Self::explicit_snapshot(lv1),
+        }
+    }
+
+    /// A completed wait consumes its phase token and returns the matching typed transition.
+    /// Poll cancellation before completion leaves the pending operation and its token untouched.
+    async fn complete(pending: &mut Option<Self>) -> CompletedRecallOperation {
+        match pending.as_mut().expect("enabled recall branch has an operation") {
+            Self::Admission { future, .. } => {
+                let result = future.as_mut().await;
+                let Self::Admission { generation, admission, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
+                CompletedRecallOperation::Admission { generation, admission, result }
+            }
+            Self::DispatchSnapshot { future, .. } => {
+                let result = future.as_mut().await;
+                let Self::DispatchSnapshot { generation, dispatch, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
+                CompletedRecallOperation::DispatchSnapshot { generation, dispatch, result }
+            }
+            Self::DispatchCommand { future, .. } => {
+                let result = future.as_mut().await;
+                let Self::DispatchCommand { generation, prepared, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
+                CompletedRecallOperation::DispatchCommand { generation, prepared, result }
+            }
+            Self::ObservationSnapshot { future, .. } => {
+                let result = future.as_mut().await;
+                let Self::ObservationSnapshot { generation, prepared, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
+                CompletedRecallOperation::ObservationSnapshot { generation, prepared, result }
+            }
+            Self::ObservationHandoff { future, .. } => {
+                let completion = future.as_mut().await;
+                let Self::ObservationHandoff { generation, .. } = pending.take().expect("completed recall exists") else { unreachable!("recall phase cannot change while polled") };
+                CompletedRecallOperation::ObservationHandoff { generation, completion }
+            }
+        }
+    }
+
+    fn into_context(self) -> PendingRecallContext {
+        match self {
+            Self::Admission { admission, .. } => PendingRecallContext::Admission(admission),
+            Self::DispatchSnapshot { dispatch, .. } => PendingRecallContext::DispatchSnapshot(dispatch),
+            Self::DispatchCommand { prepared, .. } => PendingRecallContext::DispatchCommand(prepared),
+            Self::ObservationSnapshot { .. } | Self::ObservationHandoff { .. } => PendingRecallContext::Observation,
         }
     }
 
@@ -1181,11 +1313,11 @@ impl PendingRecallOperation {
     ) -> Self {
         let generation = lv1.generation();
         let scene_index = prepared.scene_index();
-        Self {
+        Self::DispatchCommand {
             generation,
-            context: PendingRecallContext::DispatchCommand(prepared),
+            prepared,
             future: Box::pin(async move {
-                let result = lv1
+                lv1
                     .request_checked(
                         |reply| Lv1Command::RecallScene {
                             scene_index,
@@ -1207,8 +1339,7 @@ impl PendingRecallOperation {
                             Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
                             other => AppCommandError::CommandFailed(other.to_string()),
                         })
-                    });
-                PendingRecallCompletion::Dispatch(result)
+                    })
             }),
         }
     }
@@ -1217,13 +1348,11 @@ impl PendingRecallOperation {
         let generation = prepared.generation();
         let scene = prepared.scene();
         let safety_deadline = prepared.safety_deadline();
-        Self {
+        Self::ObservationSnapshot {
             generation,
-            context: PendingRecallContext::ObservationSnapshot(prepared),
+            prepared,
             future: Box::pin(async move {
-                PendingRecallCompletion::ObservationSnapshot(
-                    fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await,
-                )
+                fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await
             }),
         }
     }
@@ -1238,9 +1367,8 @@ impl PendingRecallOperation {
         prepared: PreparedObservationHandoff,
     ) -> Self {
         let generation = prepared.generation;
-        Self {
+        Self::ObservationHandoff {
             generation,
-            context: PendingRecallContext::ObservationHandoff,
             future: Box::pin(async move {
                 #[cfg(test)]
                 if let Some(BeforeFadeHandoff { reached, resume }) = before_fade_handoff {
@@ -1314,12 +1442,12 @@ impl PendingRecallOperation {
                         .await
                     }
                 };
-                PendingRecallCompletion::ObservationHandoff(ObservationHandoffCompletion {
+                ObservationHandoffCompletion {
                     result,
                     queued_readiness,
                     generation,
                     scene_label,
-                })
+                }
             }),
         }
     }
@@ -1335,10 +1463,7 @@ fn start_next_recall_dispatch(
         coordinator.cancel_pending_dispatch(dispatch, "LV1 state is unavailable");
         return None;
     };
-    Some(PendingRecallOperation::explicit_snapshot(
-        handles.lv1,
-        PendingRecallContext::DispatchSnapshot(dispatch),
-    ))
+    Some(PendingRecallOperation::snapshot_for_dispatch(handles.lv1, dispatch))
 }
 
 fn cancel_pending_recall(
@@ -1347,7 +1472,7 @@ fn cancel_pending_recall(
     reason: &str,
 ) {
     if let Some(operation) = operation {
-        cancel_pending_recall_context(operation.context, coordinator, reason);
+        cancel_pending_recall_context(operation.into_context(), coordinator, reason);
     }
 }
 
@@ -1366,7 +1491,7 @@ fn cancel_pending_recall_context(
         PendingRecallContext::DispatchCommand(prepared) => {
             coordinator.cancel_prepared_dispatch(prepared, reason, true);
         }
-        PendingRecallContext::ObservationSnapshot(_) | PendingRecallContext::ObservationHandoff => {
+        PendingRecallContext::Observation => {
             coordinator.cancel(reason, true);
         }
     }
@@ -1374,8 +1499,7 @@ fn cancel_pending_recall_context(
 
 #[allow(clippy::too_many_arguments)]
 async fn finish_pending_recall(
-    operation: PendingRecallOperation,
-    completion: PendingRecallCompletion,
+    operation: CompletedRecallOperation,
     pending: &mut Option<PendingRecallOperation>,
     coordinator: &mut RecallCoordinator,
     peers: &ScenesPeers,
@@ -1388,14 +1512,14 @@ async fn finish_pending_recall(
     event_bus: &AppEventBus,
     #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
 ) {
-    let generation_changed = operation.generation != active_generation
-        || runtime_generation.current().await != operation.generation;
+    let generation_changed = operation.generation() != active_generation
+        || runtime_generation.current().await != operation.generation();
     if generation_changed
         || *scene_library_status != SceneLibraryStatus::Ready
         || peers.handles(active_generation).is_none()
     {
-        cancel_pending_recall(
-            Some(operation),
+        cancel_pending_recall_context(
+            operation.into_context(),
             coordinator,
             "LV1 connection generation changed",
         );
@@ -1405,11 +1529,8 @@ async fn finish_pending_recall(
         return;
     }
 
-    match (operation.context, completion) {
-        (
-            PendingRecallContext::Admission(admission),
-            PendingRecallCompletion::Snapshot(Ok(snapshot)),
-        ) => {
+    match operation {
+        CompletedRecallOperation::Admission { admission, result: Ok(snapshot), .. } => {
             if coordinator.finish_admission(
                 admission,
                 lockout,
@@ -1419,18 +1540,12 @@ async fn finish_pending_recall(
                 *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
             }
         }
-        (
-            PendingRecallContext::Admission(admission),
-            PendingRecallCompletion::Snapshot(Err(error)),
-        ) => {
+        CompletedRecallOperation::Admission { admission, result: Err(error), .. } => {
             if coordinator.fail_admission(admission, error) {
                 *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
             }
         }
-        (
-            PendingRecallContext::DispatchSnapshot(dispatch),
-            PendingRecallCompletion::Snapshot(Ok(snapshot)),
-        ) => {
+        CompletedRecallOperation::DispatchSnapshot { dispatch, result: Ok(snapshot), .. } => {
             match coordinator.prepare_dispatch(
                 dispatch,
                 active_generation,
@@ -1453,10 +1568,7 @@ async fn finish_pending_recall(
                 }
             }
         }
-        (
-            PendingRecallContext::DispatchSnapshot(dispatch),
-            PendingRecallCompletion::Snapshot(Err(error)),
-        ) => {
+        CompletedRecallOperation::DispatchSnapshot { dispatch, result: Err(error), .. } => {
             let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
                 ("LV1 connection generation changed", true)
             } else {
@@ -1467,16 +1579,10 @@ async fn finish_pending_recall(
                 coordinator.clear_late_observations();
             }
         }
-        (
-            PendingRecallContext::DispatchCommand(prepared),
-            PendingRecallCompletion::Dispatch(result),
-        ) => {
+        CompletedRecallOperation::DispatchCommand { prepared, result, .. } => {
             coordinator.finish_dispatch(prepared, result);
         }
-        (
-            PendingRecallContext::ObservationSnapshot(prepared),
-            PendingRecallCompletion::ObservationSnapshot(result),
-        ) => {
+        CompletedRecallOperation::ObservationSnapshot { prepared, result, .. } => {
             let handles = peers
                 .handles(active_generation)
                 .expect("current recall peers were checked");
@@ -1500,20 +1606,10 @@ async fn finish_pending_recall(
                 prepared,
             ));
         }
-        (
-            PendingRecallContext::ObservationHandoff,
-            PendingRecallCompletion::ObservationHandoff(completion),
-        ) => {
+        CompletedRecallOperation::ObservationHandoff { completion, .. } => {
             if !lockout.current() {
                 coordinator.finish_observation_handoff(completion, event_bus);
             }
-        }
-        (context, _) => {
-            cancel_pending_recall_context(
-                context,
-                coordinator,
-                "LV1 recall operation became inconsistent",
-            );
         }
     }
 }

@@ -47,7 +47,7 @@ struct ZeroDurationCommit {
     ping_sequence: u64,
     snapshot_at: Instant,
     observed_pings: VecDeque<ObservedPing>,
-    readiness_lagged: bool,
+    continuity: FactContinuity,
 }
 
 enum PendingWriteKind {
@@ -66,6 +66,94 @@ struct PendingWrite {
         >,
     >,
     kind: PendingWriteKind,
+}
+
+/// Only this state owns a proposal before mailbox capacity is granted.
+/// Consuming it yields the commit token; cancellation drops it without committing targets.
+enum WriteAdmission {
+    Idle,
+    WaitingForCapacity(Box<PendingWrite>),
+}
+
+impl WriteAdmission {
+    fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match self {
+            Self::Idle => None,
+            Self::WaitingForCapacity(pending) => pending.deadline(),
+        }
+    }
+
+    async fn reserve(&mut self) -> Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError> {
+        match self {
+            Self::WaitingForCapacity(pending) => pending.admission.as_mut().await,
+            Self::Idle => std::future::pending().await,
+        }
+    }
+
+    fn take(&mut self) -> Option<PendingWrite> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Idle => None,
+            Self::WaitingForCapacity(pending) => Some(*pending),
+        }
+    }
+}
+
+/// Owns ticker lifetime and exactly-once completion for an admission epoch.
+/// Readiness is orthogonal: it may remain installed after the last target is removed.
+enum FadeExecution {
+    Idle,
+    Running(tokio::time::Interval),
+    Completed,
+    Aborted,
+}
+
+impl FadeExecution {
+    fn start(&mut self) {
+        let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        *self = Self::Running(interval);
+    }
+
+    fn stop_clock(&mut self) {
+        if matches!(self, Self::Running(_)) {
+            *self = Self::Idle;
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::Idle;
+    }
+
+    fn abort(&mut self) {
+        *self = Self::Aborted;
+    }
+
+    fn write_failed(&mut self) {
+        // A failed proposal stops ticking but does not reopen a completed epoch.
+        if !matches!(self, Self::Completed) {
+            *self = Self::Aborted;
+        }
+    }
+
+    fn complete(&mut self) -> bool {
+        if matches!(self, Self::Completed) {
+            false
+        } else {
+            *self = Self::Completed;
+            true
+        }
+    }
+
+    async fn tick(&mut self) {
+        match self {
+            Self::Running(interval) => { interval.tick().await; }
+            Self::Idle | Self::Completed | Self::Aborted => std::future::pending().await,
+        }
+    }
 }
 
 enum RecallSceneFadeAdmission {
@@ -162,20 +250,17 @@ async fn run_engine(
     let generation = connection.generation();
     let mut app_events = event_bus.subscribe();
     let mut state = EngineState::new(event_bus.clone(), generation);
-    let mut tick_interval: Option<tokio::time::Interval> = None;
-    let mut fade_completed_emitted = false;
-    let mut pending_write: Option<PendingWrite> = None;
+    let mut execution = FadeExecution::Idle;
+    let mut pending_write = WriteAdmission::Idle;
     let mut deferred_commands = VecDeque::new();
 
     loop {
-        let accepts_new_work = pending_write.is_none();
+        let accepts_new_work = pending_write.is_idle();
         let tick_fut = async {
-            match (tick_interval.as_mut(), accepts_new_work) {
-                (Some(interval), true) => {
-                    interval.tick().await;
-                    true
-                }
-                _ => std::future::pending::<bool>().await,
+            if accepts_new_work {
+                execution.tick().await;
+            } else {
+                std::future::pending::<()>().await;
             }
         };
         let command_fut = async {
@@ -190,22 +275,12 @@ async fn run_engine(
         };
         let readiness_deadline = [
             state.readiness_deadline(),
-            pending_write.as_ref().and_then(PendingWrite::deadline),
+            pending_write.deadline(),
         ]
         .into_iter()
         .flatten()
         .min();
-        let pending_admission_fut = async {
-            match pending_write.as_mut() {
-                Some(pending) => Some(pending.admission.as_mut().await),
-                None => {
-                    std::future::pending::<
-                        Option<Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError>>,
-                    >()
-                    .await
-                }
-            }
-        };
+        let pending_admission_fut = pending_write.reserve();
         let readiness_timeout_fut = async move {
             match readiness_deadline {
                 Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -218,14 +293,13 @@ async fn run_engine(
             _ = readiness_timeout_fut => {
                 handle_readiness_timeout(
                     &mut state,
-                    &mut tick_interval,
-                    &mut fade_completed_emitted,
+                    &mut execution,
                 );
                 cancel_expired_pending_write(&mut pending_write);
             }
 
             cmd = command_fut => {
-                if pending_write.is_some() {
+                if !pending_write.is_idle() {
                     match cmd {
                         None => break,
                         Some(command) => deferred_commands.push_back(command),
@@ -243,8 +317,7 @@ async fn run_engine(
                             let mut context = EventContext {
                                 generation,
                                 state: &mut state,
-                                tick_interval: &mut tick_interval,
-                                fade_completed_emitted: &mut fade_completed_emitted,
+                                execution: &mut execution,
                             };
                             handle_recall_scene_fade(
                                 &connection,
@@ -262,8 +335,7 @@ async fn run_engine(
                                 let result = finish_recall_admission(
                                     &connection,
                                     &mut state,
-                                    &mut tick_interval,
-                                    &mut fade_completed_emitted,
+                                    &mut execution,
                                     outcome,
                                     RecallLogContext {
                                         scene_index,
@@ -278,10 +350,10 @@ async fn run_engine(
                                 }
                             }
                             Ok(RecallSceneFadeAdmission::ZeroDuration(commit)) => {
-                                pending_write = Some(PendingWrite {
+                                pending_write = WriteAdmission::WaitingForCapacity(Box::new(PendingWrite {
                                     admission: reserve_for_write(connection.clone()),
                                     kind: PendingWriteKind::ZeroDuration { commit, reply },
-                                });
+                                }));
                             }
                             Err(error) => {
                                 if let Some(reply) = reply {
@@ -295,8 +367,7 @@ async fn run_engine(
                             let mut context = EventContext {
                                 generation,
                                 state: &mut state,
-                                tick_interval: &mut tick_interval,
-                                fade_completed_emitted: &mut fade_completed_emitted,
+                                execution: &mut execution,
                             };
                             handle_wait_for_recall_readiness(
                                 &connection,
@@ -314,14 +385,13 @@ async fn run_engine(
                 }
             }
 
-            Some(admission) = pending_admission_fut => {
+            admission = pending_admission_fut => {
                 let effect = drain_ready_app_events(
                     &mut app_events,
                     &mut EventContext {
                         generation,
                         state: &mut state,
-                        tick_interval: &mut tick_interval,
-                        fade_completed_emitted: &mut fade_completed_emitted,
+                        execution: &mut execution,
                     },
                 );
                 if effect != AppEventEffect::Continue {
@@ -335,8 +405,7 @@ async fn run_engine(
                 finish_pending_write(
                     &connection,
                     &mut state,
-                    &mut tick_interval,
-                    &mut fade_completed_emitted,
+                    &mut execution,
                     pending.kind,
                     admission,
                 ).await;
@@ -349,8 +418,7 @@ async fn run_engine(
                     &mut EventContext {
                         generation,
                         state: &mut state,
-                        tick_interval: &mut tick_interval,
-                        fade_completed_emitted: &mut fade_completed_emitted,
+                        execution: &mut execution,
                     },
                 );
                 if effect != AppEventEffect::Continue {
@@ -389,15 +457,15 @@ async fn run_engine(
                     if let Err(error) = connection.ensure_current().await {
                         abort_after_write_failure(
                             &mut state,
-                            &mut tick_interval,
+                            &mut execution,
                             error,
                         );
                     }
                 } else {
-                    pending_write = Some(PendingWrite {
+                    pending_write = WriteAdmission::WaitingForCapacity(Box::new(PendingWrite {
                         admission: reserve_for_write(connection.clone()),
                         kind: PendingWriteKind::Tick(writes),
-                    });
+                    }));
                 }
             }
         }
@@ -432,8 +500,7 @@ fn reserve_for_write(
 async fn finish_recall_admission(
     connection: &Lv1Connection,
     state: &mut EngineState,
-    tick_interval: &mut Option<tokio::time::Interval>,
-    fade_completed_emitted: &mut bool,
+    execution: &mut FadeExecution,
     outcome: RecallSceneFadeOutcome,
     log_context: RecallLogContext<'_>,
 ) -> Result<(), AppCommandError> {
@@ -446,11 +513,7 @@ async fn finish_recall_admission(
     connection
         .if_current(|| {
             if state.is_active() {
-                let mut interval =
-                    tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                *tick_interval = Some(interval);
-                *fade_completed_emitted = false;
+                execution.start();
                 match outcome {
                     RecallSceneFadeOutcome::Started => tracing::info!(event = "fade_started", scene_index, scene_name, duration_ms, target_count, "Fade started for {}: {} ({} targets, {} ms)", scene_index, scene_name, target_count, duration_ms),
                     RecallSceneFadeOutcome::Finishing { target_count } => tracing::info!(event = "fade_same_scene_finishing", scene_index, scene_name, target_count, "Repeated scene recall is finishing active fade targets for {}: {} ({} targets)", scene_index, scene_name, target_count),
@@ -458,9 +521,9 @@ async fn finish_recall_admission(
                 }
                 state.fan_out(FadeEvent::FadeStarted);
             } else {
-                *tick_interval = None;
+                execution.stop_clock();
                 if !state.is_waiting_for_readiness() {
-                    complete_fade(tick_interval, state, fade_completed_emitted);
+                    complete_fade(execution, state);
                 }
             }
         })
@@ -471,8 +534,7 @@ async fn finish_recall_admission(
 async fn finish_pending_write(
     connection: &Lv1Connection,
     state: &mut EngineState,
-    tick_interval: &mut Option<tokio::time::Interval>,
-    fade_completed_emitted: &mut bool,
+    execution: &mut FadeExecution,
     kind: PendingWriteKind,
     admission: Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError>,
 ) {
@@ -516,7 +578,7 @@ async fn finish_pending_write(
             };
             if let Err(error) = result {
                 report_write_error(connection, &state.event_bus, &error).await;
-                abort_after_write_failure(state, tick_interval, error);
+                abort_after_write_failure(state, execution, error);
                 return;
             }
             let committed = connection
@@ -540,12 +602,12 @@ async fn finish_pending_write(
                         }
                     }
                     if !state.is_active() {
-                        complete_fade(tick_interval, state, fade_completed_emitted);
+                        complete_fade(execution, state);
                     }
                 })
                 .await;
             if committed.is_none() {
-                abort_after_write_failure(state, tick_interval, AppCommandError::StaleGeneration);
+                abort_after_write_failure(state, execution, AppCommandError::StaleGeneration);
             }
         }
         PendingWriteKind::ZeroDuration { commit, reply } => {
@@ -587,8 +649,7 @@ async fn finish_pending_write(
                         finish_recall_admission(
                             connection,
                             state,
-                            tick_interval,
-                            fade_completed_emitted,
+                            execution,
                             RecallSceneFadeOutcome::Started,
                             RecallLogContext {
                                 scene_index,
@@ -617,7 +678,7 @@ async fn commit_zero_duration(
         .if_current(|| {
             ensure_recall_deadline(commit.readiness.deadline)?;
             for target in &commit.config.targets {
-                state.channels.retain(|active| active.key != target.key());
+                state.release_target(&target.key());
                 state.fan_out(FadeEvent::ChannelCompleted {
                     group: target.group,
                     channel: target.channel,
@@ -635,7 +696,7 @@ async fn commit_zero_duration(
                         now: commit.snapshot_at,
                         readiness: commit.readiness,
                         observed_pings: &commit.observed_pings,
-                        readiness_lagged: commit.readiness_lagged,
+                        continuity: commit.continuity,
                     },
                 );
             }
@@ -647,7 +708,7 @@ async fn commit_zero_duration(
 
 fn abort_after_write_failure(
     state: &mut EngineState,
-    tick_interval: &mut Option<tokio::time::Interval>,
+    execution: &mut FadeExecution,
     error: AppCommandError,
 ) {
     let reason = if error == AppCommandError::StaleGeneration {
@@ -663,11 +724,11 @@ fn abort_after_write_failure(
         });
     }
     state.cancel_runtime_work(reason);
-    *tick_interval = None;
+    execution.write_failed();
     state.fan_out(FadeEvent::FadeAborted);
 }
 
-fn cancel_pending_write(pending: &mut Option<PendingWrite>, effect: AppEventEffect) {
+fn cancel_pending_write(pending: &mut WriteAdmission, effect: AppEventEffect) {
     let Some(PendingWrite {
         kind: PendingWriteKind::ZeroDuration { reply, .. },
         ..
@@ -681,10 +742,9 @@ fn cancel_pending_write(pending: &mut Option<PendingWrite>, effect: AppEventEffe
     }
 }
 
-fn cancel_expired_pending_write(pending: &mut Option<PendingWrite>) {
+fn cancel_expired_pending_write(pending: &mut WriteAdmission) {
     if pending
-        .as_ref()
-        .and_then(PendingWrite::deadline)
+        .deadline()
         .is_none_or(|deadline| Instant::now() < deadline)
     {
         return;
@@ -702,29 +762,24 @@ fn cancel_expired_pending_write(pending: &mut Option<PendingWrite>) {
 }
 
 fn complete_fade(
-    tick_interval: &mut Option<tokio::time::Interval>,
+    execution: &mut FadeExecution,
     state: &mut EngineState,
-    fade_completed_emitted: &mut bool,
 ) {
-    if *fade_completed_emitted {
+    if !execution.complete() {
         return;
     }
-    *fade_completed_emitted = true;
-    *tick_interval = None;
     tracing::info!(event = "fade_completed", "Fade completed");
     state.fan_out(FadeEvent::FadeCompleted);
 }
 
 fn handle_readiness_timeout(
     state: &mut EngineState,
-    tick_interval: &mut Option<tokio::time::Interval>,
-    fade_completed_emitted: &mut bool,
+    execution: &mut FadeExecution,
 ) {
     let Some(context) = state.timeout_readiness() else {
         return;
     };
-    *tick_interval = None;
-    *fade_completed_emitted = false;
+    execution.abort();
     if context.completion_owned {
         tracing::debug!(
             event = "fade_post_recall_ping_timeout",
@@ -758,14 +813,13 @@ struct ObservedPing {
 struct SnapshotWithPings<T> {
     value: T,
     pings: VecDeque<ObservedPing>,
-    readiness_lagged: bool,
+    continuity: FactContinuity,
 }
 
 struct EventContext<'a> {
     generation: u64,
     state: &'a mut EngineState,
-    tick_interval: &'a mut Option<tokio::time::Interval>,
-    fade_completed_emitted: &'a mut bool,
+    execution: &'a mut FadeExecution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -774,6 +828,19 @@ enum AppEventEffect {
     Disconnected,
     GenerationChanged,
     StreamClosed,
+}
+
+#[derive(Clone, Copy)]
+enum FactContinuity {
+    Intact,
+    Lagged,
+}
+
+/// The snapshot result cannot be admitted until the retained fact prefix is drained.
+/// The prefix is finite so a busy producer cannot indefinitely starve admission.
+enum SnapshotAcquisition<T> {
+    AwaitingSnapshot,
+    DrainingFacts { result: Result<T, AppCommandError>, remaining: usize },
 }
 
 async fn await_snapshot_with_facts<T>(
@@ -785,92 +852,81 @@ async fn await_snapshot_with_facts<T>(
 ) -> Result<SnapshotWithPings<T>, AppCommandError> {
     tokio::pin!(snapshot);
     let mut pings = VecDeque::with_capacity(READINESS_PINGS_REQUIRED.into());
-    let mut readiness_lagged = false;
+    let mut continuity = FactContinuity::Intact;
+    let mut acquisition = SnapshotAcquisition::AwaitingSnapshot;
     loop {
-        let readiness_deadline = context.state.readiness_deadline();
-        let readiness_timeout = async move {
-            match readiness_deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::pin!(readiness_timeout);
-
-        tokio::select! {
-            biased;
-            result = &mut snapshot => {
-                if matches!(&result, Err(AppCommandError::StaleGeneration)) {
-                    return result.map(|value| SnapshotWithPings {
-                        value,
-                        pings,
-                        readiness_lagged,
-                    });
-                }
-
-                apply_elapsed_readiness_timeout(context);
-                let mut remaining = app_events.len();
-                while remaining > 0 {
-                    apply_elapsed_readiness_timeout(context);
-                    let effect = match app_events.try_recv() {
-                        Ok(event) => {
-                            remaining -= 1;
-                            let observed_at = Instant::now();
-                            retain_wait_ping(&event, context.generation, observed_at, &mut pings);
-                            process_app_event(Ok(event), observed_at, context)
-                        }
-                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
-                            readiness_lagged = true;
-                            let skipped = usize::try_from(count).unwrap_or(usize::MAX).max(1);
-                            remaining = remaining.saturating_sub(skipped);
-                            process_app_event(
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)),
-                                Instant::now(),
-                                context,
-                            )
-                        }
-                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                            AppEventEffect::StreamClosed
-                        }
-                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                            apply_elapsed_readiness_timeout(context);
-                            return result.map(|value| SnapshotWithPings {
-                                value,
-                                pings,
-                                readiness_lagged,
-                            });
-                        }
-                    };
-                    if let Some(error) = snapshot_wait_cancellation(effect) {
-                        return Err(error);
+        match acquisition {
+            SnapshotAcquisition::AwaitingSnapshot => {
+                let readiness_deadline = context.state.readiness_deadline();
+                let readiness_timeout = async move {
+                    match readiness_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
                     }
+                };
+                tokio::pin!(readiness_timeout);
+                tokio::select! {
+                    biased;
+                    result = &mut snapshot => {
+                        if matches!(&result, Err(AppCommandError::StaleGeneration)) {
+                            return result.map(|value| SnapshotWithPings { value, pings, continuity });
+                        }
+                        apply_elapsed_readiness_timeout(context);
+                        acquisition = SnapshotAcquisition::DrainingFacts {
+                            result,
+                            remaining: app_events.len(),
+                        };
+                    },
+                    _ = &mut readiness_timeout => {
+                        handle_readiness_timeout(context.state, context.execution);
+                    },
+                    event = app_events.recv() => {
+                        if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) {
+                            continuity = FactContinuity::Lagged;
+                        }
+                        let observed_at = Instant::now();
+                        if let Ok(event) = &event {
+                            retain_wait_ping(event, context.generation, observed_at, &mut pings);
+                        }
+                        if let Some(error) = snapshot_wait_cancellation(process_app_event(event, observed_at, context)) {
+                            return Err(error);
+                        }
+                    },
                 }
+            }
+            SnapshotAcquisition::DrainingFacts { result, mut remaining } => {
                 apply_elapsed_readiness_timeout(context);
-                return result.map(|value| SnapshotWithPings {
-                    value,
-                    pings,
-                    readiness_lagged,
-                });
-            },
-            _ = &mut readiness_timeout => {
-                handle_readiness_timeout(
-                    context.state,
-                    context.tick_interval,
-                    context.fade_completed_emitted,
-                );
-            },
-            event = app_events.recv() => {
-                if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) {
-                    readiness_lagged = true;
+                if remaining == 0 {
+                    return result.map(|value| SnapshotWithPings { value, pings, continuity });
                 }
-                let observed_at = Instant::now();
-                if let Ok(event) = &event {
-                    retain_wait_ping(event, context.generation, observed_at, &mut pings);
-                }
-                let effect = process_app_event(event, observed_at, context);
+                let effect = match app_events.try_recv() {
+                    Ok(event) => {
+                        remaining -= 1;
+                        let observed_at = Instant::now();
+                        retain_wait_ping(&event, context.generation, observed_at, &mut pings);
+                        process_app_event(Ok(event), observed_at, context)
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
+                        continuity = FactContinuity::Lagged;
+                        let skipped = usize::try_from(count).unwrap_or(usize::MAX).max(1);
+                        remaining = remaining.saturating_sub(skipped);
+                        process_app_event(
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)),
+                            Instant::now(),
+                            context,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => AppEventEffect::StreamClosed,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        apply_elapsed_readiness_timeout(context);
+                        return result.map(|value| SnapshotWithPings { value, pings, continuity });
+                    }
+                };
                 if let Some(error) = snapshot_wait_cancellation(effect) {
                     return Err(error);
                 }
-            },
+                acquisition = SnapshotAcquisition::DrainingFacts { result, remaining };
+            }
         }
     }
 }
@@ -915,8 +971,7 @@ fn apply_elapsed_readiness_timeout(context: &mut EventContext<'_>) {
     {
         handle_readiness_timeout(
             context.state,
-            context.tick_interval,
-            context.fade_completed_emitted,
+            context.execution,
         );
     }
 }
@@ -962,8 +1017,7 @@ fn process_app_event(
 ) -> AppEventEffect {
     let generation = context.generation;
     let state = &mut *context.state;
-    let tick_interval = &mut *context.tick_interval;
-    let fade_completed_emitted = &mut *context.fade_completed_emitted;
+    let execution = &mut *context.execution;
     match event {
         Ok(AppEvent::Lv1 {
             generation: event_generation,
@@ -993,8 +1047,8 @@ fn process_app_event(
                     parameter: FadeParameter::FaderDb,
                 });
                 if !state.is_active() {
-                    *fade_completed_emitted = false;
-                    complete_fade(tick_interval, state, fade_completed_emitted);
+                    execution.reset();
+                    complete_fade(execution, state);
                 }
                 return AppEventEffect::Continue;
             }
@@ -1013,8 +1067,7 @@ fn process_app_event(
                 group,
                 channel,
                 pan,
-                tick_interval,
-                fade_completed_emitted,
+                execution,
             );
         }
         Ok(AppEvent::Lv1 {
@@ -1023,8 +1076,7 @@ fn process_app_event(
         }) if event_generation == generation => {
             if state.is_active() || state.is_waiting_for_readiness() {
                 state.cancel_runtime_work(RecallReadinessCancellation::Disconnected);
-                *tick_interval = None;
-                *fade_completed_emitted = false;
+                execution.abort();
                 tracing::warn!(event = "fade_aborted", "Fade aborted");
                 state.fan_out(FadeEvent::FadeAborted);
             }
@@ -1037,8 +1089,7 @@ fn process_app_event(
         )) if event_generation != generation => {
             if state.is_active() || state.is_waiting_for_readiness() {
                 state.cancel_runtime_work(RecallReadinessCancellation::GenerationChanged);
-                *tick_interval = None;
-                *fade_completed_emitted = false;
+                execution.abort();
                 state.fan_out(FadeEvent::FadeAborted);
             }
             return AppEventEffect::GenerationChanged;
@@ -1165,7 +1216,7 @@ async fn handle_recall_scene_fade(
     ensure_recall_deadline(deadline)?;
     let snapshot = snapshot_with_pings.value;
     let observed_pings = snapshot_with_pings.pings;
-    let readiness_lagged = snapshot_with_pings.readiness_lagged;
+    let continuity = snapshot_with_pings.continuity;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
@@ -1187,7 +1238,7 @@ async fn handle_recall_scene_fade(
                         now,
                         readiness,
                         observed_pings: &observed_pings,
-                        readiness_lagged,
+                        continuity,
                     },
                 );
                 Ok(RecallSceneFadeAdmission::Immediate(
@@ -1206,7 +1257,7 @@ async fn handle_recall_scene_fade(
             ping_sequence: snapshot.ping_sequence,
             snapshot_at: now,
             observed_pings,
-            readiness_lagged,
+            continuity,
         }));
     }
 
@@ -1274,8 +1325,7 @@ async fn handle_recall_scene_fade(
                     }
                     .unwrap_or(target.target);
 
-                    state.channels.retain(|ch| ch.key != target.key());
-                    state.channels.push(ActiveTarget::new(ActiveTargetInit {
+                    state.install_target(ActiveTarget::new(ActiveTargetInit {
                         scene: config.scene.clone(),
                         key: target.key(),
                         start_value,
@@ -1303,7 +1353,7 @@ async fn handle_recall_scene_fade(
                     now,
                     readiness,
                     observed_pings: &observed_pings,
-                    readiness_lagged,
+                    continuity,
                 },
             );
 
@@ -1343,7 +1393,7 @@ async fn handle_wait_for_recall_readiness(
     ensure_recall_deadline(deadline)?;
     let snapshot = snapshot_with_pings.value;
     let observed_pings = snapshot_with_pings.pings;
-    let readiness_lagged = snapshot_with_pings.readiness_lagged;
+    let continuity = snapshot_with_pings.continuity;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
@@ -1360,7 +1410,7 @@ async fn handle_wait_for_recall_readiness(
                     now: Instant::now(),
                     readiness,
                     observed_pings: &observed_pings,
-                    readiness_lagged,
+                    continuity,
                 },
             );
             Ok(())
@@ -1388,7 +1438,7 @@ struct ReadinessBarrierInstall<'a> {
     now: Instant,
     readiness: RecallReadinessRequest,
     observed_pings: &'a VecDeque<ObservedPing>,
-    readiness_lagged: bool,
+    continuity: FactContinuity,
 }
 
 fn start_readiness_barrier(state: &mut EngineState, install: ReadinessBarrierInstall<'_>) {
@@ -1399,7 +1449,7 @@ fn start_readiness_barrier(state: &mut EngineState, install: ReadinessBarrierIns
         now,
         readiness,
         observed_pings,
-        readiness_lagged,
+        continuity,
     } = install;
     let generation = state.generation();
     let readiness_action = if state.is_waiting_for_readiness() {
@@ -1414,7 +1464,7 @@ fn start_readiness_barrier(state: &mut EngineState, install: ReadinessBarrierIns
         now,
         readiness,
     );
-    if readiness_lagged {
+    if matches!(continuity, FactContinuity::Lagged) {
         state.mark_readiness_lagged();
     }
     tracing::debug!(
@@ -1485,8 +1535,7 @@ fn handle_pan_family_pan_report(
     group: i32,
     channel: i32,
     reported_pan: f64,
-    tick_interval: &mut Option<tokio::time::Interval>,
-    fade_completed_emitted: &mut bool,
+    execution: &mut FadeExecution,
 ) {
     let pan_override = if let Some(pan_target) = state.channels.iter_mut().find(|ch| {
         ch.key.group == group && ch.key.channel == channel && ch.key.parameter == FadeParameter::Pan
@@ -1505,7 +1554,7 @@ fn handle_pan_family_pan_report(
                 reported_pan,
                 expected_pan,
                 threshold = crate::fade::tick::PAN_OVERRIDE_THRESHOLD,
-                confirmation_count = pan_target.override_deviation_count,
+                confirmation_count = pan_target.override_confirmation_count(),
                 required_confirmation_count = crate::fade::tick::PAN_OVERRIDE_CONFIRMATION_COUNT,
                 "Pan override suspect: group {}, channel {}, reported {}, expected {}",
                 group,
@@ -1557,12 +1606,27 @@ fn handle_pan_family_pan_report(
 
     if !state.is_active() {
         // If that was the last automated move, close out the fade cleanly.
-        complete_fade(tick_interval, state, fade_completed_emitted);
+        complete_fade(execution, state);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completion_epoch_reopens_after_reset_or_abort() {
+        let mut execution = super::FadeExecution::Idle;
+        assert!(execution.complete());
+        assert!(!execution.complete());
+        execution.stop_clock();
+        assert!(!execution.complete());
+        execution.write_failed();
+        assert!(!execution.complete());
+        execution.abort();
+        assert!(execution.complete());
+        execution.reset();
+        assert!(execution.complete());
+    }
+
     use super::*;
     use crate::fade::FadeEngineHandle;
     use crate::fade::curve::FadeCurve;

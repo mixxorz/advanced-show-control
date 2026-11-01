@@ -160,14 +160,13 @@ async fn run_show_actor(
     lockout_tx: watch::Sender<bool>,
     backup_dir: std::path::PathBuf,
 ) {
-    let mut pending: Option<PendingShowOperation> = None;
-    let mut deferred_command = None;
-    let mut command_channel_drained = false;
+    let mut execution = ShowExecution::Idle;
+    let mut mailbox = CommandAdmission::Accepting;
     loop {
-        if let Some(operation) = pending.as_mut() {
+        if let ShowExecution::Running(operation) = &mut execution {
             tokio::select! {
                 completion = &mut operation.future => {
-                    let dirty_during_wait = operation.dirty_during_wait;
+                    let dirty_during_wait = operation.edits == ObservedEdits::Dirty;
                     finish_pending_operation(
                         completion,
                         dirty_during_wait,
@@ -175,20 +174,20 @@ async fn run_show_actor(
                         &event_bus,
                     );
                     publish_lockout_if_changed(&lockout_tx, &state);
-                    pending = None;
+                    execution = ShowExecution::Idle;
                 }
-                command = rx.recv(), if deferred_command.is_none() && !command_channel_drained => {
+                command = rx.recv(), if matches!(mailbox, CommandAdmission::Accepting) => {
                     let Some(command) = command else {
-                        command_channel_drained = true;
+                        mailbox = CommandAdmission::Drained;
                         continue;
                     };
                     match command {
                         ShowCommand::CurrentSessionState { reply } => {
-                            operation.dirty_during_wait |= drain_available_show_events(
+                            operation.edits.observe(drain_available_show_events(
                                 &mut events,
                                 &mut state,
                                 &event_bus,
-                            );
+                            ));
                             let _ = reply.send(state.session_state());
                         }
                         ShowCommand::CurrentShowFilePath { reply } => {
@@ -211,18 +210,19 @@ async fn run_show_actor(
                                 &peers,
                             ).await;
                         }
-                        command => deferred_command = Some(command),
+                        command => mailbox = CommandAdmission::Deferred(command),
                     }
                 }
                 event = events.recv() => {
                     let Some(dirtied) = handle_show_event(event, &mut state, &event_bus) else {
                         break;
                     };
-                    operation.dirty_during_wait |= dirtied;
+                    operation.edits.observe(dirtied);
                 }
             }
-        } else if let Some(command) = deferred_command.take() {
-            pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+        } else if matches!(mailbox, CommandAdmission::Deferred(_)) {
+            let CommandAdmission::Deferred(command) = std::mem::replace(&mut mailbox, CommandAdmission::Accepting) else { unreachable!() };
+            execution = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await.into();
             publish_lockout_if_changed(&lockout_tx, &state);
         } else {
             tokio::select! {
@@ -232,7 +232,7 @@ async fn run_show_actor(
                         drain_available_show_events(&mut events, &mut state, &event_bus);
                         let _ = reply.send(state.session_state());
                     } else {
-                        pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+                        execution = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await.into();
                         publish_lockout_if_changed(&lockout_tx, &state);
                     }
                 }
@@ -307,9 +307,33 @@ fn handle_show_event(
     }
 }
 
+// Persistence and mailbox admission are orthogonal machines. A deferred mutation blocks
+// later mailbox reads, but never blocks event consumption or the active I/O completion.
+enum ShowExecution {
+    Idle,
+    Running(PendingShowOperation),
+}
+impl From<Option<PendingShowOperation>> for ShowExecution {
+    fn from(operation: Option<PendingShowOperation>) -> Self {
+        match operation { Some(operation) => Self::Running(operation), None => Self::Idle }
+    }
+}
+enum CommandAdmission {
+    Accepting,
+    Deferred(ShowCommand),
+    Drained,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObservedEdits { Clean, Dirty }
+impl ObservedEdits {
+    fn observe(&mut self, dirty: bool) {
+        if dirty { *self = Self::Dirty; }
+    }
+}
+
 struct PendingShowOperation {
     future: Pin<Box<dyn Future<Output = PendingShowCompletion> + Send>>,
-    dirty_during_wait: bool,
+    edits: ObservedEdits,
 }
 
 enum PendingShowCompletion {
@@ -451,7 +475,7 @@ async fn handle_command(
                     .await;
                     PendingShowCompletion::NewFromTemplate { result, reply }
                 }),
-                dirty_during_wait: false,
+                edits: ObservedEdits::Clean,
             });
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
@@ -480,7 +504,7 @@ async fn handle_command(
                     .await;
                     PendingShowCompletion::Save { result, reply }
                 }),
-                dirty_during_wait: false,
+                edits: ObservedEdits::Clean,
             });
         }
         ShowCommand::SetDiscoveredLv1Systems { systems, reply } => {
@@ -530,7 +554,7 @@ async fn handle_command(
                     .await;
                     PendingShowCompletion::Load { result, reply }
                 }),
-                dirty_during_wait: false,
+                edits: ObservedEdits::Clean,
             });
         }
     }
@@ -551,8 +575,7 @@ fn pending_new_show(
                 let scene_configs = crate::scenes::align_scene_configs(Vec::new(), scene_list);
                 let selected_scene_internal_id =
                     scene_configs.first().map(|scene| scene.internal_scene_id);
-                validate_lv1_snapshot(&peers, expected_generation, &lv1).await?;
-                replace_session_document(
+                ValidatedSession::prepare(
                     &peers,
                     SessionDocument {
                         scenes: SceneDocument {
@@ -562,7 +585,10 @@ fn pending_new_show(
                         cue_lists: CueListDocument::default(),
                     },
                     expected_generation,
+                    &lv1,
                 )
+                .await?
+                .commit(&peers)
                 .await?;
                 Ok(NewShowFileResult {
                     selected_scene_internal_id,
@@ -571,7 +597,7 @@ fn pending_new_show(
             .await;
             PendingShowCompletion::New { result, reply }
         }),
-        dirty_during_wait: false,
+        edits: ObservedEdits::Clean,
     }
 }
 
@@ -885,15 +911,17 @@ async fn prepare_load_show_file(
                 .map(|scene| scene.internal_scene_id)
         });
     scene_document.selected_scene_internal_id = selected_scene_internal_id;
-    validate_lv1_snapshot(peers, expected_generation, lv1).await?;
-    let committed = replace_session_document(
+    let committed = ValidatedSession::prepare(
         peers,
         SessionDocument {
             scenes: scene_document,
             cue_lists: imported_cue_list_snapshot.clone(),
         },
         expected_generation,
+        lv1,
     )
+    .await?
+    .commit(peers)
     .await?;
     should_mark_dirty |= committed.cue_lists != imported_cue_list_snapshot;
     Ok(PreparedLoad {
@@ -926,6 +954,27 @@ async fn current_session_document(peers: &ShowActorPeers) -> Result<SessionDocum
         .await
         .map_err(|_| "Session snapshot reply timed out".to_string())?
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
+}
+
+// Imported/new documents must cross the validation state before they can request commit.
+// The generation remains rechecked by the owner at actual replacement admission.
+struct ValidatedSession {
+    document: SessionDocument,
+    generation: u64,
+}
+impl ValidatedSession {
+    async fn prepare(
+        peers: &ShowActorPeers,
+        document: SessionDocument,
+        generation: u64,
+        expected: &Lv1StateSnapshot,
+    ) -> Result<Self, String> {
+        validate_lv1_snapshot(peers, generation, expected).await?;
+        Ok(Self { document, generation })
+    }
+    async fn commit(self, peers: &ShowActorPeers) -> Result<SessionDocument, String> {
+        replace_session_document(peers, self.document, self.generation).await
+    }
 }
 
 /// @cc [owner:mixxorz,label:persistence] replacement-timeout-serialization

@@ -53,11 +53,20 @@ pub enum UpdatesCommand {
 #[derive(Clone)]
 pub struct UpdateInstallPlan {
     launch: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    authority: Option<Arc<PlanAuthority>>,
+    authority: InstallAuthority,
 }
+#[derive(Clone)]
+enum InstallAuthority { Unbound, Bound(Arc<PlanAuthority>) }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateChannel { Stable, Nightly }
+impl From<bool> for UpdateChannel {
+    fn from(nightly: bool) -> Self { if nightly { Self::Nightly } else { Self::Stable } }
+}
+impl UpdateChannel { fn nightly(self) -> bool { self == Self::Nightly } }
+
 struct PlanAuthority {
     settings: tokio::sync::watch::Receiver<crate::runtime::AppStateSnapshot>,
-    nightly: bool,
+    channel: UpdateChannel,
 }
 impl std::fmt::Debug for UpdateInstallPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,9 +83,10 @@ impl UpdateInstallPlan {
     }
 
     fn validate(&self) -> Result<(), String> {
-        let valid = self.authority.as_ref().is_some_and(|authority| {
-            authority.settings.borrow().settings.include_nightly_updates == authority.nightly
-        });
+        let valid = match &self.authority {
+            InstallAuthority::Unbound => false,
+            InstallAuthority::Bound(authority) => UpdateChannel::from(authority.settings.borrow().settings.include_nightly_updates) == authority.channel,
+        };
         if valid {
             Ok(())
         } else {
@@ -85,9 +95,9 @@ impl UpdateInstallPlan {
     }
 
     fn bind(mut self, bus: &crate::runtime::events::AppEventBus, nightly: bool) -> Self {
-        self.authority = Some(Arc::new(PlanAuthority {
+        self.authority = InstallAuthority::Bound(Arc::new(PlanAuthority {
             settings: bus.state(),
-            nightly,
+            channel: nightly.into(),
         }));
         self
     }
@@ -102,15 +112,19 @@ impl UpdateInstallPlan {
 /// Arm MUST synchronously validate backend channel authority before storing a plan.
 /// They MUST NOT perform I/O, await an actor, or launch installation.
 #[derive(Clone, Default)]
-pub struct UpdateInstallQueue(Arc<Mutex<Option<UpdateInstallPlan>>>);
+pub struct UpdateInstallQueue(Arc<Mutex<InstallIntent>>);
+#[derive(Default)]
+enum InstallIntent { #[default] Unarmed, Armed(UpdateInstallPlan) }
 impl UpdateInstallQueue {
     pub fn arm(&self, plan: UpdateInstallPlan) -> Result<(), String> {
         plan.validate()?;
-        *self.0.lock().expect("update install queue poisoned") = Some(plan);
+        *self.0.lock().expect("update install queue poisoned") = InstallIntent::Armed(plan);
         Ok(())
     }
     pub fn take(&self) -> Option<UpdateInstallPlan> {
-        self.0.lock().expect("update install queue poisoned").take()
+        match std::mem::take(&mut *self.0.lock().expect("update install queue poisoned")) {
+            InstallIntent::Unarmed => None, InstallIntent::Armed(plan) => Some(plan),
+        }
     }
 }
 

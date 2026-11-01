@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 pub(crate) struct StagedFile {
     destination: PathBuf,
     temporary: PathBuf,
-    published: bool,
+    publication: Publication,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publication { Staged, Published }
 
 impl StagedFile {
     /// @cc [owner:mixxorz,label:persistence] stage-complete-synced-content
@@ -40,7 +43,7 @@ impl StagedFile {
             let staged = Self {
                 destination: destination.to_owned(),
                 temporary,
-                published: false,
+                publication: Publication::Staged,
             };
             let result = file.write_all(contents).and_then(|_| file.sync_all());
             // Windows requires the file to be closed before replacement or cleanup.
@@ -56,14 +59,14 @@ impl StagedFile {
     /// the stage unpublished so cleanup is attempted, and MUST NOT report publication success.
     pub(crate) fn publish(mut self) -> io::Result<()> {
         replace(&self.temporary, &self.destination)?;
-        self.published = true;
+        self.publication = Publication::Published;
         Ok(())
     }
 }
 
 impl Drop for StagedFile {
     fn drop(&mut self) {
-        if !self.published {
+        if self.publication == Publication::Staged {
             let _ = fs::remove_file(&self.temporary);
         }
     }

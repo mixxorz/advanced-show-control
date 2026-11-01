@@ -77,6 +77,13 @@ struct SerialCommand {
     command: BoxedCommand,
 }
 
+/// The lane owns one executing future; queued commands remain in the FIFO receiver.
+enum SerialLane {
+    AwaitingCommand,
+    Executing { command_id: u64, future: CommandFuture },
+    Closed,
+}
+
 impl CommandDispatcher {
     pub fn new(
         runtime: tokio::runtime::Handle,
@@ -87,12 +94,23 @@ impl CommandDispatcher {
         let serial_context = commands.clone();
         let serial_events = ui_events.clone();
         runtime.spawn(async move {
-            while let Some(serial) = serial_receiver.recv().await {
-                let result = (serial.command)(serial_context.clone()).await;
-                let _ = serial_events.send(UiEvent::CommandFinished {
-                    command_id: serial.command_id,
-                    result,
-                });
+            let mut lane = SerialLane::AwaitingCommand;
+            loop {
+                lane = match lane {
+                    SerialLane::AwaitingCommand => match serial_receiver.recv().await {
+                        Some(serial) => SerialLane::Executing {
+                            command_id: serial.command_id,
+                            future: (serial.command)(serial_context.clone()),
+                        },
+                        None => SerialLane::Closed,
+                    },
+                    SerialLane::Executing { command_id, future } => {
+                        let result = future.await;
+                        let _ = serial_events.send(UiEvent::CommandFinished { command_id, result });
+                        SerialLane::AwaitingCommand
+                    }
+                    SerialLane::Closed => break,
+                };
             }
         });
         Self {

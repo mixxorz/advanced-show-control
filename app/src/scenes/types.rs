@@ -40,6 +40,20 @@ pub struct SceneConfig {
     pub scope_toggles: SceneScopeToggles,
 }
 
+impl SceneConfig {
+    /// Linking/relinking changes only the LV1 locator; the persisted nullable index is the
+    /// authoritative two-state link representation and the durable config UUID is unchanged.
+    pub(crate) fn link_to(&mut self, index: i32, name: String) {
+        self.scene_index = Some(index);
+        self.scene_name = name;
+    }
+
+    /// Unlinking retains the last known label and all fade settings for an explicit later link.
+    pub(crate) fn unlink(&mut self) {
+        self.scene_index = None;
+    }
+}
+
 /// @cc [owner:mixxorz,label:architecture;validation] selected-scene-uuid-boundary
 /// Selection MUST be a UUID or absent throughout the scene document, commands, and projections.
 /// Scene-document deserialization MUST reject malformed selected IDs rather than retaining raw strings.
@@ -62,6 +76,31 @@ impl SceneDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_transitions_preserve_config_identity_and_unlinked_name() {
+        let id = Uuid::new_v4();
+        let mut config = SceneConfig {
+            internal_scene_id: id,
+            scene_index: Some(1),
+            scene_name: "Intro".into(),
+            duration_ms: 700,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: SceneScopeToggles::default(),
+        };
+        config.unlink();
+        assert_eq!(config.scene_index, None);
+        assert_eq!(config.scene_name, "Intro");
+        config.link_to(9, "Finale".into());
+        assert_eq!(config.scene_index, Some(9));
+        assert_eq!(config.scene_name, "Finale");
+        assert_eq!(config.internal_scene_id, id);
+        assert_eq!(config.duration_ms, 700);
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["sceneIndex"], 9);
+        assert_eq!(json["sceneName"], "Finale");
+    }
 
     #[test]
     fn scene_config_serializes_internal_id_and_nullable_scene_index() {

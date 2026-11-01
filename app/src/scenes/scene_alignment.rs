@@ -29,8 +29,7 @@ fn default_scene_config(entry: &SceneListEntry) -> SceneConfig {
 }
 
 fn update_scene_locator(config: &mut SceneConfig, entry: &SceneListEntry) {
-    config.scene_index = Some(entry.index);
-    config.scene_name = entry.name.clone();
+    config.link_to(entry.index, entry.name.clone());
 }
 
 fn describe_entries(entries: &[SceneListEntry]) -> String {
@@ -103,7 +102,7 @@ pub(crate) fn align_scene_configs(
         }
     }
     for mut scene in remaining {
-        scene.scene_index = None;
+        scene.unlink();
         next.push(scene);
     }
     next.extend(unlinked);

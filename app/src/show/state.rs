@@ -1,5 +1,30 @@
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 
+#[derive(Debug, Clone, PartialEq, Default)]
+enum FileIdentity {
+    #[default]
+    Untitled,
+    Saved { path: std::path::PathBuf, saved_at: String },
+}
+
+impl FileIdentity {
+    fn path(&self) -> Option<&std::path::PathBuf> {
+        match self { Self::Untitled => None, Self::Saved { path, .. } => Some(path) }
+    }
+    fn saved_at(&self) -> Option<&String> {
+        match self { Self::Untitled => None, Self::Saved { saved_at, .. } => Some(saved_at) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Cleanliness { #[default] Clean, Dirty }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AdmissionMode { #[default] Normal, Safe }
+impl From<bool> for AdmissionMode {
+    fn from(safe: bool) -> Self { if safe { Self::Safe } else { Self::Normal } }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompleteConnectionOutcome {
     pub accepted: bool,
@@ -12,10 +37,9 @@ pub struct CompleteConnectionOutcome {
 /// owned by the Scenes domain.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
-    lockout: bool,
-    show_file_path: Option<std::path::PathBuf>,
-    show_file_dirty: bool,
-    show_file_last_saved_at: Option<String>,
+    admission: AdmissionMode,
+    file: FileIdentity,
+    cleanliness: Cleanliness,
     discovered_lv1_systems: Vec<DiscoveredLv1System>,
     connected_lv1_identity: Option<Lv1SystemIdentity>,
     last_event_at: Option<String>,
@@ -26,7 +50,7 @@ impl ShowState {
     /// After documents for a new show have committed, resetting metadata MUST clear lockout, path,
     /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
-        self.lockout = false;
+        self.admission = AdmissionMode::Normal;
         self.reset_file_metadata();
     }
 
@@ -35,14 +59,13 @@ impl ShowState {
     /// while clearing the template path, saved timestamp, and dirty state so normal Save cannot
     /// overwrite the template without a new path selection.
     pub(crate) fn reset_for_new_show_from_template(&mut self, lockout: bool) {
-        self.lockout = lockout;
+        self.admission = lockout.into();
         self.reset_file_metadata();
     }
 
     fn reset_file_metadata(&mut self) {
-        self.show_file_path = None;
-        self.show_file_dirty = false;
-        self.show_file_last_saved_at = None;
+        self.file = FileIdentity::Untitled;
+        self.cleanliness = Cleanliness::Clean;
     }
 
     /// @cc [owner:mixxorz,label:persistence] saved-metadata-is-clean
@@ -50,13 +73,12 @@ impl ShowState {
     /// clear dirty state; callers MUST re-mark dirty afterward when import normalization changed the
     /// persisted document.
     pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
-        self.show_file_path = Some(path);
-        self.show_file_last_saved_at = Some(saved_at);
-        self.show_file_dirty = false;
+        self.file = FileIdentity::Saved { path, saved_at };
+        self.cleanliness = Cleanliness::Clean;
     }
 
     pub(crate) fn mark_dirty(&mut self) {
-        self.show_file_dirty = true;
+        self.cleanliness = Cleanliness::Dirty;
     }
 
     /// @cc [owner:mixxorz,label:product] discovery-is-whole-list-state
@@ -85,11 +107,11 @@ impl ShowState {
     }
 
     pub(crate) fn lockout(&self) -> bool {
-        self.lockout
+        self.admission == AdmissionMode::Safe
     }
 
     pub(crate) fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
-        self.show_file_path.clone()
+        self.file.path().cloned()
     }
 
     /// @cc [owner:mixxorz,label:product;presentation] session-query-names-current-show
@@ -97,15 +119,14 @@ impl ShowState {
     /// Show projection, including "Untitled Session" when there is no backing path.
     pub(crate) fn session_state(&self) -> super::events::ShowSessionState {
         super::events::ShowSessionState {
-            show_file_path: self.show_file_path.clone(),
+            show_file_path: self.file.path().cloned(),
             show_file_name: self.show_file_name(),
-            show_file_dirty: self.show_file_dirty,
+            show_file_dirty: self.cleanliness == Cleanliness::Dirty,
         }
     }
 
     fn show_file_name(&self) -> String {
-        self.show_file_path
-            .as_ref()
+        self.file.path()
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .map(str::to_string)
@@ -114,11 +135,11 @@ impl ShowState {
 
     pub fn projection_state(&self) -> super::events::ShowProjectionState {
         super::events::ShowProjectionState {
-            lockout: self.lockout,
-            show_file_path: self.show_file_path.clone(),
+            lockout: self.lockout(),
+            show_file_path: self.file.path().cloned(),
             show_file_name: self.show_file_name(),
-            show_file_dirty: self.show_file_dirty,
-            show_file_last_saved_at: self.show_file_last_saved_at.clone(),
+            show_file_dirty: self.cleanliness == Cleanliness::Dirty,
+            show_file_last_saved_at: self.file.saved_at().cloned(),
             discovered_lv1_systems: self.discovered_lv1_systems.clone(),
             connected_lv1_identity: self.connected_lv1_identity.clone(),
             last_event_at: self.last_event_at.clone(),
@@ -129,10 +150,11 @@ impl ShowState {
     /// Lockout updates MUST report `true` only when the stored safety value changes; repeated values
     /// MUST remain no-ops so callers do not publish misleading state changes.
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
-        if self.lockout == enabled {
+        let next = AdmissionMode::from(enabled);
+        if self.admission == next {
             false
         } else {
-            self.lockout = enabled;
+            self.admission = next;
             true
         }
     }
@@ -158,6 +180,30 @@ mod tests {
             state.session_state().show_file_name,
             state.projection_state().show_file_name
         );
+    }
+
+    #[test]
+    fn metadata_transitions_preserve_template_safety_without_adopting_its_path() {
+        let mut state = ShowState::default();
+        assert!(!state.session_state().show_file_dirty);
+        state.mark_dirty();
+        assert!(state.session_state().show_file_dirty);
+        state.mark_saved("/shows/template.ascs".into(), "saved".into());
+        assert!(!state.session_state().show_file_dirty);
+        assert_eq!(state.projection_state().show_file_last_saved_at.as_deref(), Some("saved"));
+        state.mark_dirty();
+        assert!(state.session_state().show_file_dirty);
+        state.reset_for_new_show_from_template(true);
+        let projection = state.projection_state();
+        assert!(projection.lockout);
+        assert!(projection.show_file_path.is_none());
+        assert!(projection.show_file_last_saved_at.is_none());
+        assert!(!projection.show_file_dirty);
+        state.reset_for_new_show();
+        assert!(!state.lockout());
+        assert!(!state.set_lockout(false));
+        assert!(state.set_lockout(true));
+        assert!(!state.set_lockout(true));
     }
 
     fn identity(uuid: &str) -> Lv1SystemIdentity {

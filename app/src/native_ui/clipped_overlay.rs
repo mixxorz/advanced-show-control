@@ -13,7 +13,7 @@ use super::theme;
 pub(super) fn clipped_overlay(child: impl IntoElement) -> impl IntoElement {
     let mask = Rc::new(Cell::new(None));
     ClippedOverlay {
-        child: Some(
+        child: OverlayChild::Layout(
             MaskedOverlay {
                 child: child.into_any_element(),
                 mask: mask.clone(),
@@ -35,8 +35,29 @@ pub(super) fn vertical_scrollbar_overlay(handle: &ScrollHandle) -> impl IntoElem
     )
 }
 
+enum OverlayChild {
+    Layout(AnyElement),
+    Deferred,
+}
+
+impl OverlayChild {
+    fn layout(&mut self) -> &mut AnyElement {
+        match self {
+            Self::Layout(child) => child,
+            Self::Deferred => panic!("overlay child already handed to deferred draw"),
+        }
+    }
+
+    fn defer(&mut self) -> AnyElement {
+        match std::mem::replace(self, Self::Deferred) {
+            Self::Layout(child) => child,
+            Self::Deferred => panic!("overlay child may only be deferred once"),
+        }
+    }
+}
+
 struct ClippedOverlay {
-    child: Option<AnyElement>,
+    child: OverlayChild,
     mask: Rc<Cell<Option<ContentMask<Pixels>>>>,
 }
 
@@ -59,7 +80,7 @@ impl Element for ClippedOverlay {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        (self.child.as_mut().unwrap().request_layout(window, cx), ())
+        (self.child.layout().request_layout(window, cx), ())
     }
 
     fn prepaint(
@@ -74,7 +95,7 @@ impl Element for ClippedOverlay {
         let mask = window.content_mask();
         self.mask.set(Some(mask));
         window.defer_draw(
-            self.child.take().unwrap(),
+            self.child.defer(),
             window.element_offset(),
             0,
             Some(mask),
